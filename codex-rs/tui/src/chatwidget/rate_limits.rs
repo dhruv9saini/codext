@@ -319,8 +319,11 @@ impl ChatWidget {
             }
             if should_pause_queue {
                 self.input_queue.suppress_queue_autosend = true;
+                // Keep Enter available for a true turn/steer while a regular turn is active.
+                // The ChatWidget submission gate still queues idle submissions until quota
+                // returns, and Tab continues to provide an explicit follow-up queue action.
                 self.bottom_pane
-                    .set_queue_submissions(/*queue_submissions*/ true);
+                    .set_queue_submissions(/*queue_submissions*/ false);
                 self.request_redraw();
             } else if should_resume_paused_queue {
                 let was_suppressing_queue_autosend = self.input_queue.suppress_queue_autosend;

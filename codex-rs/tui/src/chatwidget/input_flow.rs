@@ -32,7 +32,10 @@ impl ChatWidget {
                 }
                 let should_submit_now = self.is_session_configured()
                     && !self.is_plan_streaming_in_tui()
-                    && !self.input_queue.suppress_queue_autosend;
+                    && submission_allowed_while_queue_autosend_is_suppressed(
+                        self.input_queue.suppress_queue_autosend,
+                        self.turn_lifecycle.agent_turn_running,
+                    );
                 if should_submit_now {
                     if self.only_user_shell_commands_running()
                         && !user_message.text.starts_with('!')
@@ -272,5 +275,30 @@ impl ChatWidget {
                     .map(|message| message.text.clone()),
             )
             .collect()
+    }
+}
+
+fn submission_allowed_while_queue_autosend_is_suppressed(
+    suppress_queue_autosend: bool,
+    agent_turn_running: bool,
+) -> bool {
+    !suppress_queue_autosend || agent_turn_running
+}
+
+#[cfg(test)]
+mod tests {
+    use super::submission_allowed_while_queue_autosend_is_suppressed;
+
+    #[test]
+    fn active_steer_remains_available_when_quota_queue_is_paused() {
+        assert!(submission_allowed_while_queue_autosend_is_suppressed(
+            true, true
+        ));
+        assert!(!submission_allowed_while_queue_autosend_is_suppressed(
+            true, false
+        ));
+        assert!(submission_allowed_while_queue_autosend_is_suppressed(
+            false, false
+        ));
     }
 }
