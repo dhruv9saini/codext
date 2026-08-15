@@ -1,83 +1,42 @@
 name: rust-release
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
-  build-unix:
-    name: Build - ${{ matrix.runner }} - ${{ matrix.target }}
-    runs-on: ${{ matrix.runner }}
+  linux-x64:
+    runs-on: ubuntu-24.04
     timeout-minutes: 240
-    permissions:
-      contents: read
     defaults:
       run:
         working-directory: codex-rs
     env:
       CARGO_PROFILE_RELEASE_LTO: thin
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      # Avoid intermittent SecureTransport/libgit2 failures while fetching
-      # libwebrtc's nested libyuv submodule on macOS release runners.
+      CARGO_BUILD_JOBS: 2
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-          - runner: macos-15
-            target: aarch64-apple-darwin
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      TARGET: x86_64-unknown-linux-musl
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Print Linux runner diagnostics
-        if: ${{ runner.os == 'Linux' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "runner.os=${RUNNER_OS}"
-          echo "runner.arch=${RUNNER_ARCH}"
-          echo "target=${{ matrix.target }}"
-          echo "nproc=$(nproc)"
-          free -h
-          df -h
-          ulimit -a
-
-      - name: Limit Linux musl Cargo jobs
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
-        shell: bash
-        run: echo "CARGO_BUILD_JOBS=2" >> "$GITHUB_ENV"
-
       - name: Install Linux build dependencies
-        if: ${{ runner.os == 'Linux' }}
         shell: bash
         run: |
           set -euo pipefail
-          apt_retry_args=(
-            -o Acquire::Retries=5
-            -o Acquire::http::Timeout=30
-          )
-          sudo apt-get "${apt_retry_args[@]}" update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_retry_args[@]}" install -y --no-install-recommends pkg-config libcap-dev libubsan1
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
+            install -y --no-install-recommends pkg-config libcap-dev libubsan1
 
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-unknown-linux-musl
 
       - name: Use hermetic Cargo home
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -87,54 +46,31 @@ jobs:
           echo "${cargo_home}/bin" >> "$GITHUB_PATH"
           : > "${cargo_home}/config.toml"
 
-      - name: Cache Cargo home and target dir
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
+      - name: Cache Cargo state
         uses: actions/cache@v5
         with:
           path: |
             ${{ github.workspace }}/.cargo-home/registry
             ${{ github.workspace }}/.cargo-home/git
             codex-rs/target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('codex-rs/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
-
-      - name: Cache Cargo home and target dir
-        if: ${{ !contains(matrix.target, 'unknown-linux-musl') }}
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            codex-rs/target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('codex-rs/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
+          key: da-active-steer-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock') }}
+          restore-keys: da-active-steer-${{ runner.os }}-
 
       - name: Install Zig
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         uses: Loongphy/setup-zig@node24-lts-runtime
         with:
           version: 0.14.0
 
       - name: Install musl build tools
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
-        env:
-          TARGET: ${{ matrix.target }}
         shell: bash
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
 
       - name: Configure rustc UBSan wrapper
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         shell: bash
         run: |
           set -euo pipefail
-          ubsan=""
-          if command -v ldconfig >/dev/null 2>&1; then
-            ubsan="$(ldconfig -p | grep -m1 'libubsan\.so\.1' | sed -E 's/.*=> (.*)$/\1/')"
-          fi
-          wrapper_root="${RUNNER_TEMP:-/tmp}"
-          wrapper="${wrapper_root}/rustc-ubsan-wrapper"
+          ubsan="$(ldconfig -p | grep -m1 'libubsan\.so\.1' | sed -E 's/.*=> (.*)$/\1/' || true)"
+          wrapper="${RUNNER_TEMP}/rustc-ubsan-wrapper"
           cat > "${wrapper}" <<EOF
           #!/usr/bin/env bash
           set -euo pipefail
@@ -146,453 +82,41 @@ jobs:
           chmod +x "${wrapper}"
           echo "RUSTC_WRAPPER=${wrapper}" >> "$GITHUB_ENV"
           echo "RUSTC_WORKSPACE_WRAPPER=" >> "$GITHUB_ENV"
-
-      - name: Clear sanitizer flags
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
-        shell: bash
-        run: |
-          set -euo pipefail
           echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
-          target_no_jitter="AWS_LC_SYS_NO_JITTER_ENTROPY_${{ matrix.target }}"
-          target_no_jitter="${target_no_jitter//-/_}"
-          echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl=1" >> "$GITHUB_ENV"
           echo "RUSTFLAGS=" >> "$GITHUB_ENV"
           echo "CARGO_ENCODED_RUSTFLAGS=" >> "$GITHUB_ENV"
           echo "RUSTDOCFLAGS=" >> "$GITHUB_ENV"
           echo "CARGO_BUILD_RUSTFLAGS=" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
 
       - name: Configure musl rusty_v8 artifact overrides
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         uses: ./.github/actions/setup-rusty-v8
         with:
-          target: ${{ matrix.target }}
+          target: x86_64-unknown-linux-musl
 
-      - name: Cargo build
+      - name: Run focused regression test
+        shell: bash
+        run: cargo test --locked --target "$TARGET" -p codex-tui active_steer_remains_available_when_quota_queue_is_paused
+
+      - name: Build production binaries
         shell: bash
         run: |
-          cargo build --locked --target ${{ matrix.target }} --release --timings \
+          cargo build --locked --target "$TARGET" --release \
             --bin codex \
             --bin codex-code-mode-host
 
-      - name: Stage Unix binary artifact
+      - name: Strip binaries
         shell: bash
         run: |
           set -euo pipefail
-          staged_dir="${RUNNER_TEMP}/release-bin/${{ matrix.target }}"
-          rm -rf "${staged_dir}"
-          mkdir -p "${staged_dir}"
-          cp "target/${{ matrix.target }}/release/codex" "${staged_dir}/codex"
-          cp "target/${{ matrix.target }}/release/codex-code-mode-host" \
-            "${staged_dir}/codex-code-mode-host"
-
-      - name: Archive Linux symbols and strip staged binary
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          staged_dir="${RUNNER_TEMP}/release-bin/${{ matrix.target }}"
-          bash "${GITHUB_WORKSPACE}/.github/scripts/archive-release-symbols-and-strip-binaries.sh" \
-            --target "${{ matrix.target }}" \
-            --artifact-name "${{ matrix.target }}" \
-            --release-dir "${staged_dir}" \
-            --archive-dir "symbols-dist/${{ matrix.target }}" \
-            --binaries "codex codex-code-mode-host"
+          zig objcopy --strip-all "target/${TARGET}/release/codex"
+          zig objcopy --strip-all "target/${TARGET}/release/codex-code-mode-host"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: codex-bin-${{ matrix.target }}
+          name: da-active-steer-linux-x64
           path: |
-            ${{ runner.temp }}/release-bin/${{ matrix.target }}/codex
-            ${{ runner.temp }}/release-bin/${{ matrix.target }}/codex-code-mode-host
+            codex-rs/target/x86_64-unknown-linux-musl/release/codex
+            codex-rs/target/x86_64-unknown-linux-musl/release/codex-code-mode-host
           if-no-files-found: error
-
-      - if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: codex-symbols-${{ matrix.target }}
-          path: codex-rs/symbols-dist/${{ matrix.target }}/*
-          if-no-files-found: error
-
-  build-windows:
-    name: Build - windows-2025 - ${{ matrix.target }}
-    runs-on: windows-2025
-    permissions:
-      contents: read
-    defaults:
-      run:
-        working-directory: codex-rs
-    env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-pc-windows-msvc
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache Cargo home and target dir
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            codex-rs/target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('codex-rs/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
-
-      - name: Cargo build
-        shell: bash
-        run: |
-          if [[ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" ]]; then
-            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
-          fi
-          cargo build --locked --target ${{ matrix.target }} --release --timings \
-            --bin codex \
-            --bin codex-code-mode-host \
-            --bin codex-windows-sandbox-setup \
-            --bin codex-command-runner
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: codex-bin-${{ matrix.target }}
-          path: |
-            codex-rs/target/${{ matrix.target }}/release/codex.exe
-            codex-rs/target/${{ matrix.target }}/release/codex-code-mode-host.exe
-            codex-rs/target/${{ matrix.target }}/release/codex-windows-sandbox-setup.exe
-            codex-rs/target/${{ matrix.target }}/release/codex-command-runner.exe
-          if-no-files-found: error
-
-  publish-release:
-    needs:
-      - build-unix
-      - build-windows
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Compute release version
-        id: compute
-        shell: bash
-        run: |
-          set -euo pipefail
-          base_version="$(grep -m1 '^version' codex-rs/Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')"
-          short_sha="${GITHUB_SHA::7}"
-          echo "base_version=${base_version}" >> "$GITHUB_OUTPUT"
-          echo "release_version=${base_version}-${short_sha}" >> "$GITHUB_OUTPUT"
-          echo "release_tag=codext-v${base_version}-${short_sha}" >> "$GITHUB_OUTPUT"
-
-      - name: Generate release notes
-        id: release_notes
-        env:
-          BASE_VERSION: ${{ steps.compute.outputs.base_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          notes_path="${RUNNER_TEMP}/release-notes.md"
-          upstream_tag="rust-v${BASE_VERSION}"
-          upstream_label="codex-v${BASE_VERSION}"
-          upstream_url="https://github.com/openai/codex/releases/tag/${upstream_tag}"
-          {
-            printf 'For upstream changes, see [%s](%s).\n\n' "${upstream_label}" "${upstream_url}"
-            git log -1 --format=%B "${GITHUB_SHA}"
-            echo
-          } > "${notes_path}"
-          echo "path=${notes_path}" >> "$GITHUB_OUTPUT"
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: codex-bin-*
-          path: ${{ runner.temp }}/artifacts
-
-      - name: Download Linux symbols artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: codex-symbols-*
-          path: ${{ runner.temp }}/symbols
-
-      - name: Stage release assets
-        env:
-          VERSION: ${{ steps.compute.outputs.release_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifacts_root="${RUNNER_TEMP}/artifacts"
-          out_dir="${GITHUB_WORKSPACE}/dist/release"
-          mkdir -p "${out_dir}"
-
-          linux_stage="$(mktemp -d "${RUNNER_TEMP}/release-linux-x64-XXXXXX")"
-          cp "${artifacts_root}/codex-bin-x86_64-unknown-linux-musl/codex" "${linux_stage}/codext"
-          cp "${artifacts_root}/codex-bin-x86_64-unknown-linux-musl/codex-code-mode-host" \
-            "${linux_stage}/codex-code-mode-host"
-          chmod +x "${linux_stage}/codext"
-          chmod +x "${linux_stage}/codex-code-mode-host"
-          tar -C "${linux_stage}" -czf "${out_dir}/codext-linux-x64-${VERSION}.tar.gz" \
-            codext codex-code-mode-host
-
-          linux_arm64_stage="$(mktemp -d "${RUNNER_TEMP}/release-linux-arm64-XXXXXX")"
-          cp "${artifacts_root}/codex-bin-aarch64-unknown-linux-musl/codex" "${linux_arm64_stage}/codext"
-          cp "${artifacts_root}/codex-bin-aarch64-unknown-linux-musl/codex-code-mode-host" \
-            "${linux_arm64_stage}/codex-code-mode-host"
-          chmod +x "${linux_arm64_stage}/codext"
-          chmod +x "${linux_arm64_stage}/codex-code-mode-host"
-          tar -C "${linux_arm64_stage}" -czf "${out_dir}/codext-linux-arm64-${VERSION}.tar.gz" \
-            codext codex-code-mode-host
-
-          darwin_x64_stage="$(mktemp -d "${RUNNER_TEMP}/release-darwin-x64-XXXXXX")"
-          cp "${artifacts_root}/codex-bin-x86_64-apple-darwin/codex" "${darwin_x64_stage}/codext"
-          cp "${artifacts_root}/codex-bin-x86_64-apple-darwin/codex-code-mode-host" \
-            "${darwin_x64_stage}/codex-code-mode-host"
-          chmod +x "${darwin_x64_stage}/codext"
-          chmod +x "${darwin_x64_stage}/codex-code-mode-host"
-          tar -C "${darwin_x64_stage}" -czf "${out_dir}/codext-darwin-x64-${VERSION}.tar.gz" \
-            codext codex-code-mode-host
-
-          darwin_arm64_stage="$(mktemp -d "${RUNNER_TEMP}/release-darwin-arm64-XXXXXX")"
-          cp "${artifacts_root}/codex-bin-aarch64-apple-darwin/codex" "${darwin_arm64_stage}/codext"
-          cp "${artifacts_root}/codex-bin-aarch64-apple-darwin/codex-code-mode-host" \
-            "${darwin_arm64_stage}/codex-code-mode-host"
-          chmod +x "${darwin_arm64_stage}/codext"
-          chmod +x "${darwin_arm64_stage}/codex-code-mode-host"
-          tar -C "${darwin_arm64_stage}" -czf "${out_dir}/codext-darwin-arm64-${VERSION}.tar.gz" \
-            codext codex-code-mode-host
-
-          windows_stage="$(mktemp -d "${RUNNER_TEMP}/release-win32-x64-XXXXXX")"
-          cp "${artifacts_root}/codex-bin-x86_64-pc-windows-msvc/codex.exe" "${windows_stage}/codext.exe"
-          cp "${artifacts_root}/codex-bin-x86_64-pc-windows-msvc/codex-code-mode-host.exe" "${windows_stage}/codex-code-mode-host.exe"
-          cp "${artifacts_root}/codex-bin-x86_64-pc-windows-msvc/codex-windows-sandbox-setup.exe" "${windows_stage}/codex-windows-sandbox-setup.exe"
-          cp "${artifacts_root}/codex-bin-x86_64-pc-windows-msvc/codex-command-runner.exe" "${windows_stage}/codex-command-runner.exe"
-          (
-            cd "${windows_stage}"
-            zip -q -r "${out_dir}/codext-win32-x64-${VERSION}.zip" .
-          )
-
-          symbols_root="${RUNNER_TEMP}/symbols"
-          if [[ -d "${symbols_root}" ]]; then
-            while IFS= read -r symbol_archive; do
-              cp "${symbol_archive}" "${out_dir}/"
-            done < <(find "${symbols_root}" -type f -name '*.tar.gz' | sort)
-          fi
-
-      - name: Create or update GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_NAME: ${{ steps.compute.outputs.release_version }}
-          RELEASE_TAG: ${{ steps.compute.outputs.release_tag }}
-          RELEASE_NOTES: ${{ steps.release_notes.outputs.path }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release edit "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "codext ${RELEASE_NAME}" \
-              --notes-file "${RELEASE_NOTES}" \
-              --latest
-          else
-            gh release create "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "codext ${RELEASE_NAME}" \
-              --notes-file "${RELEASE_NOTES}" \
-              --latest
-          fi
-
-          gh release upload "${RELEASE_TAG}" dist/release/* \
-            --repo "${GITHUB_REPOSITORY}" \
-            --clobber
-
-  publish-npm:
-    needs:
-      - build-unix
-      - build-windows
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Compute release version
-        id: compute
-        shell: bash
-        run: |
-          set -euo pipefail
-          base_version="$(grep -m1 '^version' codex-rs/Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')"
-          short_sha="${GITHUB_SHA::7}"
-          echo "release_version=${base_version}-${short_sha}" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          # Node 24 bundles npm >= 11.5.1, which trusted publishing requires.
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: codex-bin-*
-          path: ${{ runner.temp }}/artifacts
-
-      - name: Assemble vendor tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifacts_root="${RUNNER_TEMP}/artifacts"
-          vendor_root="${RUNNER_TEMP}/npm-root/vendor"
-
-          mkdir -p \
-            "${vendor_root}/x86_64-unknown-linux-musl/codex" \
-            "${vendor_root}/aarch64-unknown-linux-musl/codex" \
-            "${vendor_root}/x86_64-apple-darwin/codex" \
-            "${vendor_root}/aarch64-apple-darwin/codex" \
-            "${vendor_root}/x86_64-pc-windows-msvc/codex"
-
-          cp "${artifacts_root}/codex-bin-x86_64-unknown-linux-musl/codex" \
-            "${vendor_root}/x86_64-unknown-linux-musl/codex/codex"
-          cp "${artifacts_root}/codex-bin-x86_64-unknown-linux-musl/codex-code-mode-host" \
-            "${vendor_root}/x86_64-unknown-linux-musl/codex/codex-code-mode-host"
-          cp "${artifacts_root}/codex-bin-aarch64-unknown-linux-musl/codex" \
-            "${vendor_root}/aarch64-unknown-linux-musl/codex/codex"
-          cp "${artifacts_root}/codex-bin-aarch64-unknown-linux-musl/codex-code-mode-host" \
-            "${vendor_root}/aarch64-unknown-linux-musl/codex/codex-code-mode-host"
-          cp "${artifacts_root}/codex-bin-x86_64-apple-darwin/codex" \
-            "${vendor_root}/x86_64-apple-darwin/codex/codex"
-          cp "${artifacts_root}/codex-bin-x86_64-apple-darwin/codex-code-mode-host" \
-            "${vendor_root}/x86_64-apple-darwin/codex/codex-code-mode-host"
-          cp "${artifacts_root}/codex-bin-aarch64-apple-darwin/codex" \
-            "${vendor_root}/aarch64-apple-darwin/codex/codex"
-          cp "${artifacts_root}/codex-bin-aarch64-apple-darwin/codex-code-mode-host" \
-            "${vendor_root}/aarch64-apple-darwin/codex/codex-code-mode-host"
-
-          cp "${artifacts_root}/codex-bin-x86_64-pc-windows-msvc/codex.exe" \
-            "${vendor_root}/x86_64-pc-windows-msvc/codex/codex.exe"
-          cp "${artifacts_root}/codex-bin-x86_64-pc-windows-msvc/codex-code-mode-host.exe" \
-            "${vendor_root}/x86_64-pc-windows-msvc/codex/codex-code-mode-host.exe"
-          cp "${artifacts_root}/codex-bin-x86_64-pc-windows-msvc/codex-windows-sandbox-setup.exe" \
-            "${vendor_root}/x86_64-pc-windows-msvc/codex/codex-windows-sandbox-setup.exe"
-          cp "${artifacts_root}/codex-bin-x86_64-pc-windows-msvc/codex-command-runner.exe" \
-            "${vendor_root}/x86_64-pc-windows-msvc/codex/codex-command-runner.exe"
-
-      - uses: facebook/install-dotslash@v2
-
-      - name: Install ripgrep payloads
-        run: python3 codex-cli/scripts/install_native_deps.py --component rg "${RUNNER_TEMP}/npm-root"
-
-      - name: Stage npm tarballs
-        env:
-          VERSION: ${{ steps.compute.outputs.release_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          out_dir="${GITHUB_WORKSPACE}/dist/npm"
-          mkdir -p "${out_dir}"
-          vendor_src="${RUNNER_TEMP}/npm-root/vendor"
-          packages=(
-            codex
-            codex-linux-x64
-            codex-linux-arm64
-            codex-darwin-x64
-            codex-darwin-arm64
-            codex-win32-x64
-          )
-
-          for package in "${packages[@]}"; do
-            stage_dir="$(mktemp -d "${RUNNER_TEMP}/npm-stage-${package}-XXXXXX")"
-            if [[ "${package}" == "codex" ]]; then
-              pack_output="${out_dir}/codex-npm-${VERSION}.tgz"
-              python3 codex-cli/scripts/build_npm_package.py \
-                --package "${package}" \
-                --release-version "${VERSION}" \
-                --staging-dir "${stage_dir}" \
-                --pack-output "${pack_output}"
-            else
-              platform="${package#codex-}"
-              pack_output="${out_dir}/codex-npm-${platform}-${VERSION}.tgz"
-              python3 codex-cli/scripts/build_npm_package.py \
-                --package "${package}" \
-                --release-version "${VERSION}" \
-                --staging-dir "${stage_dir}" \
-                --pack-output "${pack_output}" \
-                --vendor-src "${vendor_src}"
-            fi
-            rm -rf "${stage_dir}"
-          done
-
-      - name: Publish to npm
-        env:
-          VERSION: ${{ steps.compute.outputs.release_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          tarballs=(dist/npm/*-"${VERSION}".tgz)
-          if [[ ${#tarballs[@]} -eq 0 ]]; then
-            echo "No npm tarballs found in dist/npm for version ${VERSION}"
-            exit 1
-          fi
-
-          for tarball in "${tarballs[@]}"; do
-            filename="$(basename "${tarball}")"
-            publish_cmd=(npm publish "${GITHUB_WORKSPACE}/${tarball}" --access public)
-            tag=""
-
-            case "${filename}" in
-              codex-npm-linux-*-"${VERSION}".tgz)
-                tag="${filename#codex-npm-}"
-                tag="${tag%-${VERSION}.tgz}"
-                ;;
-              codex-npm-darwin-*-"${VERSION}".tgz)
-                tag="${filename#codex-npm-}"
-                tag="${tag%-${VERSION}.tgz}"
-                ;;
-              codex-npm-win32-*-"${VERSION}".tgz)
-                tag="${filename#codex-npm-}"
-                tag="${tag%-${VERSION}.tgz}"
-                ;;
-              codex-npm-"${VERSION}".tgz)
-                tag="latest"
-                ;;
-              *)
-                echo "Unexpected npm tarball: ${filename}"
-                exit 1
-                ;;
-            esac
-
-            if [[ -n "${tag}" ]]; then
-              publish_cmd+=(--tag "${tag}")
-            fi
-
-            echo "+ ${publish_cmd[*]}"
-            set +e
-            publish_output="$("${publish_cmd[@]}" 2>&1)"
-            publish_status=$?
-            set -e
-
-            echo "${publish_output}"
-            if [[ ${publish_status} -eq 0 ]]; then
-              continue
-            fi
-
-            if grep -qiE "previously published|cannot publish over|version already exists" <<< "${publish_output}"; then
-              echo "Skipping already-published package version for ${filename}"
-              continue
-            fi
-
-            exit "${publish_status}"
-          done
