@@ -97,7 +97,7 @@ jobs:
 
       - name: Run focused regression test
         shell: bash
-        run: cargo test --locked --target "$TARGET" -p codex-tui active_steer_remains_available_when_quota_queue_is_paused
+        run: cargo test --locked --release --target "$TARGET" -p codex-tui active_steer_remains_available_when_quota_queue_is_paused
 
       - name: Build production binaries
         shell: bash
