@@ -278,12 +278,22 @@ impl ChatWidget {
     }
 }
 
-fn submission_allowed_while_queue_autosend_is_suppressed(
+const fn submission_allowed_while_queue_autosend_is_suppressed(
     suppress_queue_autosend: bool,
     agent_turn_running: bool,
 ) -> bool {
     !suppress_queue_autosend || agent_turn_running
 }
+
+const _: () = assert!(submission_allowed_while_queue_autosend_is_suppressed(
+    true, true
+));
+const _: () = assert!(!submission_allowed_while_queue_autosend_is_suppressed(
+    true, false
+));
+const _: () = assert!(submission_allowed_while_queue_autosend_is_suppressed(
+    false, false
+));
 
 #[cfg(test)]
 mod tests {
