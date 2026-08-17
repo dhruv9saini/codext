@@ -279,6 +279,10 @@ fn helper_env_from_vars(
 
 fn helper_env_key_is_allowed(key: &str) -> bool {
     FS_HELPER_ENV_ALLOWLIST.contains(&key)
+        // A dynamically linked Codex binary may require this path when re-entering through the
+        // Linux sandbox and fs-helper aliases. The parent process already loaded under the same
+        // value, so preserving it does not add a new ambient library search path.
+        || (cfg!(target_os = "linux") && key == "LD_LIBRARY_PATH")
         // CoreFoundation consults this before falling back to user lookup during helper startup.
         || (cfg!(target_os = "macos") && key == "__CF_USER_TEXT_ENCODING")
         || bazel_bwrap_env_key_is_allowed(key)
@@ -304,11 +308,23 @@ async fn run_command(
         .stdin
         .take()
         .ok_or_else(|| internal_error("failed to open fs sandbox helper stdin".to_string()))?;
-    stdin.write_all(&request_json).await.map_err(io_error)?;
-    stdin.shutdown().await.map_err(io_error)?;
+    let write_result = stdin.write_all(&request_json).await;
+    let shutdown_result = if write_result.is_ok() {
+        stdin.shutdown().await
+    } else {
+        Ok(())
+    };
     drop(stdin);
 
     let output = child.wait_with_output().await.map_err(io_error)?;
+    if let Err(error) = write_result.or(shutdown_result) {
+        return Err(internal_error(format!(
+            "failed to send fs sandbox helper request: {error}; helper exited with status \
+             {status}: {stderr}",
+            status = output.status,
+            stderr = String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
     if !output.status.success() {
         return Err(internal_error(format!(
             "fs sandbox helper failed with status {status}: {stderr}",
@@ -486,6 +502,24 @@ mod tests {
                 ("TMP".to_string(), "/tmp".to_string()),
                 ("TEMP".to_string(), "/tmp".to_string()),
             ])
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn helper_env_preserves_linux_dynamic_library_path() {
+        let env = helper_env_from_vars(
+            [
+                ("LD_LIBRARY_PATH", "/opt/codex/lib"),
+                ("LD_PRELOAD", "/tmp/injected.so"),
+                ("OPENAI_API_KEY", "secret"),
+            ]
+            .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+        );
+
+        assert_eq!(
+            env,
+            HashMap::from([("LD_LIBRARY_PATH".to_string(), "/opt/codex/lib".to_string())])
         );
     }
 
