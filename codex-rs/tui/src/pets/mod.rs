@@ -288,6 +288,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let frame = dir.path().join("frame.png");
         std::fs::write(&frame, b"png").unwrap();
+        let expected_file_command = image_protocol::kitty_transmit_png_file_with_id(
+            &frame,
+            /*columns*/ 4,
+            /*rows*/ 2,
+            Some(49374),
+        )
+        .unwrap();
         let request = AmbientPetDraw {
             frame,
             protocol: ImageProtocol::Kitty,
@@ -369,7 +376,7 @@ mod tests {
         assert!(output.contains("a=d,d=I,i=49374,q=2;"));
         assert!(output.contains("\x1b[4;3H"));
         assert!(output.contains("a=T,t=f,f=100,c=4,r=2,q=2,i=49374;"));
-        assert!(!output.contains("cG5n"));
+        assert!(output.contains(&expected_file_command));
         assert!(output.contains("\x1b8"));
     }
 
