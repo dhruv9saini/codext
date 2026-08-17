@@ -502,19 +502,25 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
 
 #[tokio::test]
 async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered_prompt() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.codex_op_target = CodexOpTarget::AppEvent;
     chat.thread_id = Some(ThreadId::new());
 
     chat.bottom_pane
         .set_composer_text("Hi, are you there?".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { .. } => {}
-        other => panic!("expected Op::UserTurn, got {other:?}"),
+    let mut saw_user_turn = false;
+    let mut inserted = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::CodexOp(Op::UserTurn { .. }) => saw_user_turn = true,
+            AppEvent::CodexOp(other) => panic!("expected Op::UserTurn, got {other:?}"),
+            AppEvent::InsertHistoryCell(cell) => inserted.push(cell.display_lines(/*width*/ 80)),
+            _ => {}
+        }
     }
-
-    let inserted = drain_insert_history(&mut rx);
+    assert!(saw_user_turn, "expected an app-event Op::UserTurn");
     assert_eq!(inserted.len(), 1);
     assert!(lines_to_single_string(&inserted[0]).contains("Hi, are you there?"));
 
