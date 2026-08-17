@@ -2757,7 +2757,18 @@ async fn get_account_can_reload_a_changed_chatgpt_identity_from_storage() -> Res
             auth_changed: true,
         }
     );
-    assert_account_updated(&mut mcp, Some(AuthMode::Chatgpt)).await?;
+    let payload: AccountUpdatedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("account/updated"),
+    )
+    .await??;
+    assert_eq!(
+        payload,
+        AccountUpdatedNotification {
+            auth_mode: Some(AuthMode::Chatgpt),
+            plan_type: Some(AccountPlanType::Pro),
+        }
+    );
     Ok(())
 }
 
