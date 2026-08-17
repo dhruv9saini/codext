@@ -552,7 +552,15 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
         /*replay_kind*/ None,
     );
 
-    assert!(drain_insert_history(&mut rx).is_empty());
+    let duplicate = drain_insert_history(&mut rx);
+    assert!(
+        duplicate.is_empty(),
+        "expected the local prompt echo to be suppressed, got {:?}",
+        duplicate
+            .iter()
+            .map(|lines| lines_to_single_string(lines))
+            .collect::<Vec<_>>()
+    );
 
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
