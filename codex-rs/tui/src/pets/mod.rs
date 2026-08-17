@@ -288,13 +288,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let frame = dir.path().join("frame.png");
         std::fs::write(&frame, b"png").unwrap();
-        let expected_file_command = image_protocol::kitty_transmit_png_file_with_id(
-            &frame,
-            /*columns*/ 4,
-            /*rows*/ 2,
-            Some(49374),
-        )
-        .unwrap();
         let request = AmbientPetDraw {
             frame,
             protocol: ImageProtocol::Kitty,
@@ -356,6 +349,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let frame = dir.path().join("frame.png");
         std::fs::write(&frame, b"png").unwrap();
+        let expected_file_command = image_protocol::kitty_transmit_png_file_with_id(
+            &frame,
+            /*columns*/ 4,
+            /*rows*/ 2,
+            Some(49374),
+        )
+        .unwrap();
         let request = AmbientPetDraw {
             frame,
             protocol: ImageProtocol::KittyLocalFile,
