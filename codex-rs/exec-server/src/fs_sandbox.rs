@@ -317,7 +317,7 @@ async fn run_command(
     drop(stdin);
 
     let output = child.wait_with_output().await.map_err(io_error)?;
-    if let Err(error) = write_result.or(shutdown_result) {
+    if let Err(error) = write_result.and(shutdown_result) {
         return Err(internal_error(format!(
             "failed to send fs sandbox helper request: {error}; helper exited with status \
              {status}: {stderr}",
