@@ -535,6 +535,16 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
         /*replay_kind*/ None,
     );
 
+    let pending = chat
+        .pending_local_user_message_echo
+        .as_ref()
+        .expect("submitted prompt should remain pending until its app-server echo");
+    assert_eq!(pending.turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(pending.display.message, "Hi, are you there?");
+    assert!(pending.display.text_elements.is_empty());
+    assert!(pending.display.local_images.is_empty());
+    assert!(pending.display.remote_image_urls.is_empty());
+
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: "thread-1".to_string(),
