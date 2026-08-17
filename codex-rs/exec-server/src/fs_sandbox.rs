@@ -317,7 +317,7 @@ async fn run_command(
     drop(stdin);
 
     let output = child.wait_with_output().await.map_err(io_error)?;
-    if let Err(error) = write_result.and(shutdown_result) {
+    if let Err(error) = request_transport_result(write_result, shutdown_result) {
         return Err(internal_error(format!(
             "failed to send fs sandbox helper request: {error}; helper exited with status \
              {status}: {stderr}",
@@ -337,6 +337,13 @@ async fn run_command(
         FsHelperResponse::Ok(payload) => Ok(payload),
         FsHelperResponse::Error(error) => Err(error),
     }
+}
+
+fn request_transport_result(
+    write_result: std::io::Result<()>,
+    shutdown_result: std::io::Result<()>,
+) -> std::io::Result<()> {
+    write_result.and(shutdown_result)
 }
 
 fn spawn_command(
@@ -406,7 +413,38 @@ mod tests {
     use super::helper_env_from_vars;
     use super::helper_env_key_is_allowed;
     use super::helper_read_roots;
+    use super::request_transport_result;
     use super::sandbox_cwd;
+
+    #[test]
+    fn request_transport_result_preserves_write_error() {
+        let result = request_transport_result(
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "write failed",
+            )),
+            Ok(()),
+        );
+
+        let error = result.expect_err("write error must be retained");
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(error.to_string(), "write failed");
+    }
+
+    #[test]
+    fn request_transport_result_returns_shutdown_error_after_successful_write() {
+        let result = request_transport_result(
+            Ok(()),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "shutdown failed",
+            )),
+        );
+
+        let error = result.expect_err("shutdown error must be returned");
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+        assert_eq!(error.to_string(), "shutdown failed");
+    }
 
     #[test]
     fn helper_permissions_enable_minimal_reads_for_restricted_profile() {
