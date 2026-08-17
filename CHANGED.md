@@ -2,6 +2,8 @@
 
 This file captures the fork-specific behavior reapplied on top of the current upstream tag.
 
+The current source base is the official stable `rust-v0.147.0` tag from OpenAI Codex.
+
 ## TUI composer draft clipboard shortcut
 
 - Added `Ctrl+Shift+C` in the TUI composer to copy the current draft to the system clipboard when the input contains text.
@@ -46,6 +48,18 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 - When a later Codex rate-limit snapshot shows quota available again, Codext resumes autosend and submits exactly the first queued user message; any additional queued messages remain queued for normal FIFO draining after that turn completes.
 - If both a parked usage-limit recovery prompt and user-queued follow-ups exist when quota recovers, the user-queued follow-up wins and the stale synthetic recovery prompt is cleared.
 
+## Active steering while the usage-limit queue is paused
+
+- Pausing queued-message autosend no longer disables direct submission while an agent turn is still running.
+- Pressing Enter during the active turn can still steer that turn. When the TUI is idle, the same input stays queued until quota becomes available.
+- This preserves the normal distinction between Enter for an active steer and Tab for an explicit queued follow-up, including in long-lived Da and tmux sessions.
+
+## Turn-scoped local user-message echo deduplication
+
+- Locally rendered user messages are matched to the app-server echo by turn ID as well as message content.
+- The same text submitted by another client or on another turn is still rendered; Codext does not suppress it only because its text matches the last local message.
+- Active-turn steering records the existing turn ID immediately, while new turns bind the local echo when `TurnStarted` arrives.
+
 ## TUI server-overload auto-resume
 
 - When a turn fails with `ServerOverloaded`, the TUI automatically submits a `Continue` user turn so work resumes without manual intervention.
@@ -63,7 +77,7 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 - When a reload changes auth, loaded threads invalidate their cached model transport state so a reused WebSocket session created under the previous account is not used for the next turn.
 - The app-server also refreshes cloud requirements/default residency state and emits `AccountUpdated` after a changed reload so app UI account state follows the new snapshot.
 - Reapply notes: keep `reload_auth_from_storage_if_idle` wired into all three request entry points, preserve the idle guard, and preserve the invalidation chain `ThreadManager::invalidate_model_transport_caches` -> `CodexThread::invalidate_model_transport_cache` -> `ModelClient::invalidate_cached_transport_state`.
-- Reapply validation for this branch follows the temporary guardrails in `AGENTS.md`: do not run tests; validate with `cd codex-rs && cargo build -p codex-cli`.
+- Reapply validation includes focused regression tests, the applicable crate test suites, `cargo build -p codex-cli`, isolated package installation, and Linux x64 artifact checks.
 
 ## TUI exit resume command
 
@@ -74,3 +88,12 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 
 - Release builds and npm platform packages ship `codex-code-mode-host` beside the `codext` CLI binary so code mode can start from installed and locally packaged artifacts.
 - The upstream release matrix is audited during reapply instead of assuming that copying the previous fork workflow preserves all companion binaries.
+
+### `rust-v0.146.0` to `rust-v0.147.0` release workflow audit
+
+- **Applied as an equivalent fork behavior:** upstream stopped publishing the redundant legacy Linux bundle. Codext publishes only its named platform archives and npm payloads; each Linux archive contains `codext` and `codex-code-mode-host`.
+- **Fork override:** upstream moved macOS notarization to Azure Key Vault. The personal Codext workflow does not claim OpenAI signing or notarization and continues to publish unsigned fork artifacts, so OpenAI's protected signing environment is not copied.
+- **Fork override:** upstream split R2 publication into asset and finalize stages. Codext does not publish to OpenAI R2, so these jobs are not applicable.
+- **Fork override:** upstream release tags and final release gating are replaced by Codext's commit-suffixed release version and the fork's build dependencies. This preserves the existing `codext-v<version>-<sha>` and `@loongphy/codext` policy.
+- **Not applicable:** the upstream version-regex synchronization comment belongs to its tag-validation job, which the fork workflow does not use.
+- The structural release-artifact parity check must pass before the feature branch is handed off.

@@ -4,10 +4,10 @@
 ## Temporary Reapply Guardrails (`rust-v0.147.0`)
 
 - Current work on this branch is an upstream reapply / re-implementation for `rust-v0.147.0`.
-- Only implementation code and necessary docs may change for this task. Do not add or modify tests or snapshot files.
-- Do not run lint / format / auto-fix commands for this reapply, including `cargo fmt`, `just fmt`, `cargo clippy`, `cargo clippy --fix`, and `just fix`.
-- Acceptance for this reapply is limited to the `codex-upstream-reapply` skill criteria, including `cd codex-rs && cargo build -p codex-cli`.
-- After each update, commit and push the same change to both the current `origin` branch and `origin/main`.
+- The user explicitly requested regression tests and the full applicable test suite for this update. That request overrides the reapply skill's normal no-test rule. Add and update tests and snapshots as needed.
+- The user explicitly requested formatting and lint validation. Run the normal repository format and lint commands after the implementation is stable.
+- Acceptance includes the normal reapply criteria, focused regression tests, the full applicable test suite, an isolated install, and Linux x64 package artifacts.
+- Push this update only to the named feature branch on the user's fork. Do not push or merge it to `main`, and do not publish npm packages or a public release.
 <!-- codex-upstream-reapply:end -->
 
 

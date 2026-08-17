@@ -23,6 +23,7 @@ impl ChatWidget {
                 text_elements,
             } => {
                 let user_message = self.user_message_from_submission(text, text_elements);
+                self.clear_pending_usage_limit_resume_turn();
                 if user_message.text.is_empty()
                     && user_message.local_images.is_empty()
                     && user_message.remote_image_urls.is_empty()
@@ -31,7 +32,10 @@ impl ChatWidget {
                 }
                 let should_submit_now = self.is_session_configured()
                     && !self.is_plan_streaming_in_tui()
-                    && !self.input_queue.suppress_queue_autosend
+                    && submission_allowed_while_queue_autosend_is_suppressed(
+                        self.input_queue.suppress_queue_autosend,
+                        self.turn_lifecycle.agent_turn_running,
+                    )
                     && (!self.input_queue.user_turn_pending_start
                         || self.turn_lifecycle.agent_turn_running);
                 if should_submit_now {
@@ -59,6 +63,7 @@ impl ChatWidget {
                 pending_pastes,
             } => {
                 let user_message = self.user_message_from_submission(text, text_elements);
+                self.clear_pending_usage_limit_resume_turn();
                 self.queue_user_message_with_options(user_message, action, pending_pastes);
             }
             InputResult::Command(cmd) => {
@@ -110,9 +115,9 @@ impl ChatWidget {
         action: QueuedInputAction,
         pending_pastes: Vec<(String, String)>,
     ) {
-        let should_run_now = self.is_session_configured()
-            && !self.is_user_turn_pending_or_running()
-            && !self.input_queue.suppress_queue_autosend;
+        let should_run_now = !self.input_queue.suppress_queue_autosend
+            && self.is_session_configured()
+            && !self.is_user_turn_pending_or_running();
         if !should_run_now || action != QueuedInputAction::Plain {
             self.input_queue
                 .queued_user_messages
@@ -135,16 +140,39 @@ impl ChatWidget {
 
     /// If idle and there are queued inputs, submit exactly one to start the next turn.
     pub(crate) fn maybe_send_next_queued_input(&mut self) -> bool {
-        if self.input_queue.suppress_queue_autosend {
-            return false;
-        }
         if self.blocks_direct_input {
             return false;
         }
         if self.is_user_turn_pending_or_running() {
             return false;
         }
+        if let Some(user_message) = self.pending_server_overloaded_resume_turn.take() {
+            self.reasoning_buffer.clear();
+            self.set_status_header(String::from("Working"));
+            self.submit_user_message(user_message);
+            self.refresh_pending_input_preview();
+            return true;
+        }
+        if self.input_queue.suppress_queue_autosend {
+            return false;
+        }
+        if self.pending_auth_reload_attempt.is_some() {
+            return false;
+        }
+        if self.usage_limit_resume_waiting_for_auth_reload
+            && self.pending_usage_limit_resume_turn.is_some()
+        {
+            return false;
+        }
         let mut submitted_follow_up = false;
+        if let Some(user_message) = self.pending_usage_limit_resume_turn.take() {
+            self.usage_limit_resume_waiting_for_auth_reload = false;
+            self.reasoning_buffer.clear();
+            self.set_status_header(String::from("Working"));
+            self.submit_user_message(user_message);
+            self.refresh_pending_input_preview();
+            return true;
+        }
         while !self.is_user_turn_pending_or_running() {
             let Some((queued_message, history_record)) = self.pop_next_queued_user_message() else {
                 break;
@@ -255,5 +283,30 @@ impl ChatWidget {
                     .map(|message| message.text.clone()),
             )
             .collect()
+    }
+}
+
+const fn submission_allowed_while_queue_autosend_is_suppressed(
+    suppress_queue_autosend: bool,
+    agent_turn_running: bool,
+) -> bool {
+    !suppress_queue_autosend || agent_turn_running
+}
+
+#[cfg(test)]
+mod tests {
+    use super::submission_allowed_while_queue_autosend_is_suppressed;
+
+    #[test]
+    fn queue_pause_allows_active_turn_steering_but_not_idle_autosend() {
+        assert!(submission_allowed_while_queue_autosend_is_suppressed(
+            true, true
+        ));
+        assert!(!submission_allowed_while_queue_autosend_is_suppressed(
+            true, false
+        ));
+        assert!(submission_allowed_while_queue_autosend_is_suppressed(
+            false, false
+        ));
     }
 }

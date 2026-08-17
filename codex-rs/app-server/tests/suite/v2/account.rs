@@ -190,6 +190,7 @@ async fn read_account(mcp: &mut TestAppServer) -> Result<GetAccountResponse> {
     let request_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await?
@@ -312,6 +313,7 @@ async fn logout_account_removes_auth_and_notifies() -> Result<()> {
     let get_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let account: GetAccountResponse =
@@ -455,6 +457,7 @@ async fn set_auth_token_updates_account_and_notifies() -> Result<()> {
     let get_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let account: GetAccountResponse =
@@ -467,6 +470,7 @@ async fn set_auth_token_updates_account_and_notifies() -> Result<()> {
                 plan_type: AccountPlanType::Pro,
             }),
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
 
@@ -477,6 +481,7 @@ async fn set_auth_token_updates_account_and_notifies() -> Result<()> {
     let get_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let account: GetAccountResponse =
@@ -531,6 +536,7 @@ async fn account_read_refresh_token_is_noop_in_external_mode() -> Result<()> {
     let get_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: true,
+            reload_auth_from_storage: false,
         })
         .await?;
     let account: GetAccountResponse =
@@ -543,6 +549,7 @@ async fn account_read_refresh_token_is_noop_in_external_mode() -> Result<()> {
                 plan_type: AccountPlanType::Pro,
             }),
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
 
@@ -1328,6 +1335,7 @@ async fn logout_managed_bedrock_restores_default_account() -> Result<()> {
                 uses_codex_managed_credentials: true,
             }),
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
 
@@ -1349,6 +1357,7 @@ async fn logout_managed_bedrock_restores_default_account() -> Result<()> {
         GetAccountResponse {
             account: None,
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -1443,6 +1452,7 @@ async fn logout_managed_bedrock_preserves_changed_provider_without_experimental_
         GetAccountResponse {
             account: None,
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -1524,6 +1534,7 @@ async fn login_managed_bedrock_updates_active_bedrock_account() -> Result<()> {
                 uses_codex_managed_credentials: true,
             }),
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
 
@@ -2366,6 +2377,7 @@ async fn get_account_no_auth() -> Result<()> {
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2402,6 +2414,7 @@ async fn get_account_with_api_key() -> Result<()> {
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2411,6 +2424,7 @@ async fn get_account_with_api_key() -> Result<()> {
     let expected = GetAccountResponse {
         account: Some(Account::ApiKey {}),
         requires_openai_auth: true,
+        auth_changed: false,
     };
     assert_eq!(received, expected);
     Ok(())
@@ -2435,6 +2449,7 @@ async fn get_account_when_auth_not_required() -> Result<()> {
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2444,6 +2459,7 @@ async fn get_account_when_auth_not_required() -> Result<()> {
     let expected = GetAccountResponse {
         account: None,
         requires_openai_auth: false,
+        auth_changed: false,
     };
     assert_eq!(received, expected);
     Ok(())
@@ -2475,6 +2491,7 @@ region = "us-west-2"
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2486,6 +2503,7 @@ region = "us-west-2"
             uses_codex_managed_credentials: false,
         }),
         requires_openai_auth: false,
+        auth_changed: false,
     };
     assert_eq!(received, expected);
     Ok(())
@@ -2524,6 +2542,7 @@ command = "print-token"
                 uses_codex_managed_credentials: false,
             }),
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -2562,6 +2581,7 @@ region = "us-west-2"
                 uses_codex_managed_credentials: false,
             }),
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
 
@@ -2615,6 +2635,7 @@ async fn get_account_with_managed_bedrock_provider() -> Result<()> {
     let request_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let received: GetAccountResponse =
@@ -2627,6 +2648,7 @@ async fn get_account_with_managed_bedrock_provider() -> Result<()> {
                 uses_codex_managed_credentials: true,
             }),
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -2659,6 +2681,7 @@ async fn get_account_with_chatgpt() -> Result<()> {
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2671,8 +2694,70 @@ async fn get_account_with_chatgpt() -> Result<()> {
             plan_type: AccountPlanType::Pro,
         }),
         requires_openai_auth: true,
+        auth_changed: false,
     };
     assert_eq!(received, expected);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_account_can_reload_a_changed_chatgpt_identity_from_storage() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            requires_openai_auth: Some(true),
+            ..Default::default()
+        },
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("access-first")
+            .email("first@example.com")
+            .plan_type("pro")
+            .account_id(WORKSPACE_ID_INITIAL)
+            .chatgpt_account_id(WORKSPACE_ID_INITIAL),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("access-second")
+            .email("second@example.com")
+            .plan_type("pro")
+            .account_id(WORKSPACE_ID_REFRESHED)
+            .chatgpt_account_id(WORKSPACE_ID_REFRESHED),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let request_id = mcp
+        .send_get_account_request(GetAccountParams {
+            refresh_token: false,
+            reload_auth_from_storage: true,
+        })
+        .await?;
+    let received: GetAccountResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+
+    assert_eq!(
+        received,
+        GetAccountResponse {
+            account: Some(Account::Chatgpt {
+                email: Some("second@example.com".to_string()),
+                plan_type: AccountPlanType::Pro,
+            }),
+            requires_openai_auth: true,
+            auth_changed: true,
+        }
+    );
+    assert_account_updated(&mut mcp, Some(AuthMode::Chatgpt)).await?;
     Ok(())
 }
 
@@ -2704,6 +2789,7 @@ async fn get_account_with_business_prolite_returns_plan_type() -> Result<()> {
     let request_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let received: GetAccountResponse =
@@ -2717,6 +2803,7 @@ async fn get_account_with_business_prolite_returns_plan_type() -> Result<()> {
                 plan_type: AccountPlanType::SelfServeBusinessProLite,
             }),
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -2748,6 +2835,7 @@ async fn get_account_with_chatgpt_without_email() -> Result<()> {
     let request_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let received: GetAccountResponse =
@@ -2761,6 +2849,7 @@ async fn get_account_with_chatgpt_without_email() -> Result<()> {
                 plan_type: AccountPlanType::Pro,
             }),
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -2828,6 +2917,7 @@ async fn get_account_omits_chatgpt_after_permanent_refresh_failure() -> Result<(
     let request_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
 
@@ -2839,6 +2929,7 @@ async fn get_account_omits_chatgpt_after_permanent_refresh_failure() -> Result<(
         GetAccountResponse {
             account: None,
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
     server.verify().await;
@@ -2870,6 +2961,7 @@ async fn get_account_with_chatgpt_missing_plan_claim_returns_unknown() -> Result
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2882,6 +2974,7 @@ async fn get_account_with_chatgpt_missing_plan_claim_returns_unknown() -> Result
             plan_type: AccountPlanType::Unknown,
         }),
         requires_openai_auth: true,
+        auth_changed: false,
     };
     assert_eq!(received, expected);
     Ok(())

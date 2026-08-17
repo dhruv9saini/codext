@@ -159,6 +159,8 @@ pub(crate) struct PluginRemoteSectionError {
 pub(crate) enum RateLimitRefreshOrigin {
     /// Eagerly fetched after bootstrap for `/status` data and reset availability.
     StartupPrefetch { reset_hint_request_id: u64 },
+    /// Periodic refresh used to keep the status header and queue gating fresh.
+    BackgroundPoll,
     /// User-initiated via `/status`; the `request_id` correlates with the
     /// status card that should be updated when the fetch completes.
     StatusCommand { request_id: u64 },
@@ -388,6 +390,20 @@ pub(crate) enum AppEvent {
     /// Clear the current thread goal.
     ClearThreadGoal {
         thread_id: ThreadId,
+    },
+
+    /// `auth.json` changed on disk.
+    AuthFileChanged,
+
+    /// Retry a failed auth reload after backoff.
+    AuthFileChangedRetry {
+        attempt: u8,
+    },
+
+    /// Retry a server-overloaded turn after backoff.
+    ServerOverloadedRetry {
+        attempt: u8,
+        generation: u64,
     },
 
     /// Result of refreshing rate limits.
@@ -1094,6 +1110,11 @@ pub(crate) enum AppEvent {
     StatusLineWorkspaceHeadlineUpdated {
         request_id: u64,
         result: Result<crate::workspace_messages::WorkspaceHeadlineFetchResult, String>,
+    },
+    /// Async update of the compact status-header Git state.
+    StatusHeaderGitStatusUpdated {
+        cwd: PathBuf,
+        summary: Option<crate::git_status::GitStatusSummary>,
     },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {

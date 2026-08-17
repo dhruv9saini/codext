@@ -1737,6 +1737,15 @@ enum ReloadOutcome {
     Skipped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthReloadStatus {
+    Reloaded {
+        changed: bool,
+        identity_changed: bool,
+    },
+    Failed,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UnauthorizedRecoveryMode {
     Managed,
@@ -2321,6 +2330,38 @@ impl AuthManager {
         self.set_cached_auth(new_auth)
     }
 
+    /// Forces a reload from storage without clearing valid cached auth on read errors.
+    pub async fn reload_with_status(&self) -> AuthReloadStatus {
+        tracing::info!("Reloading auth from storage");
+        if self.has_external_auth() {
+            tracing::debug!("Skipping storage reload while external auth is active");
+            return AuthReloadStatus::Reloaded {
+                changed: false,
+                identity_changed: false,
+            };
+        }
+        let new_auth = match self.load_auth_from_storage().await {
+            Ok(new_auth) => new_auth,
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    "Failed to reload auth from storage; keeping current auth state"
+                );
+                return AuthReloadStatus::Failed;
+            }
+        };
+        let cached_before_reload = self.auth_cached();
+        let changed =
+            !Self::auths_equal_for_refresh(cached_before_reload.as_ref(), new_auth.as_ref());
+        let identity_changed =
+            !Self::auths_equal_for_identity(cached_before_reload.as_ref(), new_auth.as_ref());
+        self.set_cached_auth(new_auth);
+        AuthReloadStatus::Reloaded {
+            changed,
+            identity_changed,
+        }
+    }
+
     async fn reload_if_account_id_matches(
         &self,
         expected_account_id: Option<&str>,
@@ -2333,7 +2374,16 @@ impl AuthManager {
             }
         };
 
-        let new_auth = self.load_auth().await;
+        let new_auth = match self.load_auth_from_storage().await {
+            Ok(new_auth) => new_auth,
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    "Skipping auth reload because auth storage could not be read"
+                );
+                return ReloadOutcome::Skipped;
+            }
+        };
         let new_account_id = new_auth.as_ref().and_then(CodexAuth::get_account_id);
 
         if new_account_id.as_deref() != Some(expected_account_id) {
@@ -2376,6 +2426,27 @@ impl AuthManager {
                 (AuthMode::BedrockApiKey, AuthMode::BedrockApiKey) => a == b,
                 _ => false,
             },
+            _ => false,
+        }
+    }
+
+    fn auths_equal_for_identity(a: Option<&CodexAuth>, b: Option<&CodexAuth>) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) if a.api_auth_mode() == b.api_auth_mode() => {
+                match a.api_auth_mode() {
+                    AuthMode::ApiKey => a.api_key() == b.api_key(),
+                    AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens => {
+                        a.get_account_id() == b.get_account_id()
+                            && a.get_chatgpt_user_id() == b.get_chatgpt_user_id()
+                            && a.get_account_email() == b.get_account_email()
+                    }
+                    AuthMode::Headers
+                    | AuthMode::AgentIdentity
+                    | AuthMode::PersonalAccessToken
+                    | AuthMode::BedrockApiKey => Self::auths_equal_for_refresh(Some(a), Some(b)),
+                }
+            }
             _ => false,
         }
     }
@@ -2441,6 +2512,33 @@ impl AuthManager {
                 auth,
             )
             .is_ok()
+        })
+    }
+
+    async fn load_auth_from_storage(&self) -> std::io::Result<Option<CodexAuth>> {
+        let allowed_login_methods = self.allowed_login_methods();
+        let effective_chatgpt_workspaces = self.effective_chatgpt_workspaces();
+        load_auth(
+            &self.codex_home,
+            self.enable_codex_api_key_env,
+            self.auth_credentials_store_mode,
+            Some(&allowed_login_methods),
+            effective_chatgpt_workspaces.as_deref(),
+            self.chatgpt_base_url.as_deref(),
+            self.keyring_backend_kind,
+            self.agent_identity_authapi_base_url.as_deref(),
+            &self.auth_route_config,
+        )
+        .await
+        .map(|auth| {
+            auth.filter(|auth| {
+                validate_auth_restrictions(
+                    Some(&allowed_login_methods),
+                    effective_chatgpt_workspaces.as_deref(),
+                    auth,
+                )
+                .is_ok()
+            })
         })
     }
 

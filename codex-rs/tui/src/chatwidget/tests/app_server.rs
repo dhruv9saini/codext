@@ -519,6 +519,23 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
     assert!(lines_to_single_string(&inserted[0]).contains("Hi, are you there?"));
 
     chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: AppServerTurnStatus::InProgress,
+                error: None,
+                started_at: Some(0),
+                completed_at: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -536,6 +553,27 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
     );
 
     assert!(drain_insert_history(&mut rx).is_empty());
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-2".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::UserMessage {
+                id: "user-2".to_string(),
+                client_id: None,
+                content: vec![AppServerUserInput::Text {
+                    text: "Hi, are you there?".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let inserted = drain_insert_history(&mut rx);
+    assert_eq!(inserted.len(), 1);
+    assert!(lines_to_single_string(&inserted[0]).contains("Hi, are you there?"));
 }
 
 #[tokio::test]

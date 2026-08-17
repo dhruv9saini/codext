@@ -100,11 +100,16 @@
         }
       ]
     },
+    "authChanged": {
+      "description": "Whether this request reloaded a different account identity from storage.",
+      "type": "boolean"
+    },
     "requiresOpenaiAuth": {
       "type": "boolean"
     }
   },
   "required": [
+    "authChanged",
     "requiresOpenaiAuth"
   ],
   "title": "GetAccountResponse",

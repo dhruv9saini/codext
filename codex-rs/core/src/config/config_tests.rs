@@ -1082,6 +1082,8 @@ fn config_toml_deserializes_model_availability_nux() {
             session_picker_view: None,
             resume_cwd: None,
             keymap: TuiKeymap::default(),
+            usage_limit_resume_prompt: None,
+            server_overloaded_resume: true,
             model_availability_nux: ModelAvailabilityNuxConfig {
                 shown_count: HashMap::from([
                     ("gpt-bar".to_string(), 4),
@@ -1231,6 +1233,38 @@ async fn runtime_config_uses_tui_raw_output_mode() {
     .expect("load config");
 
     assert!(cfg.tui_raw_output_mode);
+}
+
+#[tokio::test]
+async fn runtime_config_resolves_codext_recovery_settings() {
+    let toml = r#"
+        [tui]
+        usage_limit_resume_prompt = "Resume after the account changes."
+        server_overloaded_resume = false
+    "#;
+    let cfg_toml: ConfigToml = toml::from_str(toml).expect("deserialize recovery settings");
+    let cfg = Config::load_from_base_config_with_overrides(
+        cfg_toml,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(
+        cfg.tui_usage_limit_resume_prompt.as_deref(),
+        Some("Resume after the account changes.")
+    );
+    assert!(!cfg.tui_server_overloaded_resume);
+}
+
+#[test]
+fn tui_recovery_settings_use_safe_defaults() {
+    let parsed: ConfigToml = toml::from_str("[tui]").expect("deserialize empty TUI table");
+    let tui = parsed.tui.expect("config should include TUI section");
+
+    assert_eq!(tui.usage_limit_resume_prompt, None);
+    assert!(tui.server_overloaded_resume);
 }
 
 #[test]
@@ -3970,6 +4004,8 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             session_picker_view: None,
             resume_cwd: None,
             keymap: TuiKeymap::default(),
+            usage_limit_resume_prompt: None,
+            server_overloaded_resume: true,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
             terminal_resize_reflow_max_rows: None,
         }

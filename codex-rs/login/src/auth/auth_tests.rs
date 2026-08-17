@@ -929,6 +929,86 @@ async fn loads_api_key_from_auth_json() {
     assert!(auth.get_token_data().is_err());
 }
 
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn reload_with_status_keeps_cached_auth_when_auth_json_is_invalid() {
+    let dir = tempdir().unwrap();
+    let _access_token_guard = remove_access_token_env_var();
+    let auth_file = dir.path().join("auth.json");
+    std::fs::write(
+        &auth_file,
+        r#"{"OPENAI_API_KEY":"sk-cached","tokens":null,"last_refresh":null}"#,
+    )
+    .unwrap();
+
+    let manager = AuthManager::new(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::Direct,
+        crate::test_support::transport_default_auth_route_config(),
+    )
+    .await;
+    assert_eq!(
+        manager
+            .auth_cached()
+            .and_then(|auth| auth.api_key().map(str::to_string)),
+        Some("sk-cached".to_string())
+    );
+
+    std::fs::write(&auth_file, "not valid JSON").unwrap();
+
+    assert_eq!(manager.reload_with_status().await, AuthReloadStatus::Failed);
+    assert_eq!(
+        manager
+            .auth_cached()
+            .and_then(|auth| auth.api_key().map(str::to_string)),
+        Some("sk-cached".to_string())
+    );
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn reload_with_status_distinguishes_token_rotation_from_identity_change() {
+    let dir = tempdir().unwrap();
+    let _access_token_guard = remove_access_token_env_var();
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some(WORKSPACE_ID_ALLOWED.to_string()),
+        },
+        dir.path(),
+    )
+    .expect("write auth file");
+    let manager = AuthManager::new(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::Direct,
+        crate::test_support::transport_default_auth_route_config(),
+    )
+    .await;
+
+    let auth_file = dir.path().join("auth.json");
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&auth_file).unwrap()).unwrap();
+    stored["tokens"]["access_token"] = json!("rotated-access-token");
+    std::fs::write(&auth_file, serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
+
+    assert_eq!(
+        manager.reload_with_status().await,
+        AuthReloadStatus::Reloaded {
+            changed: true,
+            identity_changed: false,
+        }
+    );
+}
+
 #[test]
 fn logout_removes_auth_file() -> Result<(), std::io::Error> {
     let dir = tempdir()?;
@@ -1180,6 +1260,46 @@ async fn external_auth_provider_can_install_headers() {
             .auth_cached()
             .is_some_and(|auth| auth.is_chatgpt_auth())
     );
+}
+
+#[tokio::test]
+async fn storage_reload_does_not_replace_active_external_auth() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer external"),
+    );
+    let codex_home = tempdir().expect("tempdir");
+    std::fs::write(
+        codex_home.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-stored","tokens":null,"last_refresh":null}"#,
+    )
+    .expect("write stored auth");
+    let manager = AuthManager::new(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        crate::test_support::transport_default_auth_route_config(),
+    )
+    .await;
+    manager
+        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::Headers(
+            AuthHeaders::new(headers),
+        ))))
+        .await
+        .expect("install external auth");
+
+    assert_eq!(
+        manager.reload_with_status().await,
+        AuthReloadStatus::Reloaded {
+            changed: false,
+            identity_changed: false,
+        }
+    );
+    assert!(matches!(manager.auth_cached(), Some(CodexAuth::Headers(_))));
 }
 
 struct ProviderAuthScript {

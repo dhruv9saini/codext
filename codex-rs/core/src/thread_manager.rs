@@ -676,6 +676,16 @@ impl ThreadManager {
         self.state.models_manager.clone()
     }
 
+    pub async fn invalidate_model_transport_caches(&self) -> usize {
+        let threads: Vec<Arc<CodexThread>> =
+            self.state.threads.read().await.values().cloned().collect();
+        let invalidated_thread_count = threads.len();
+        for thread in threads {
+            thread.invalidate_model_transport_cache();
+        }
+        invalidated_thread_count
+    }
+
     pub async fn list_models(
         &self,
         refresh_strategy: RefreshStrategy,

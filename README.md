@@ -2,6 +2,8 @@
 
 An opinionated Codex CLI. This is strictly a personal hobby project, forked from openai/codex.
 
+This branch is based on the official stable OpenAI Codex `rust-v0.147.0` release.
+
 ![Preview](https://github.com/user-attachments/assets/cd4bf293-85c4-4e3f-83d3-6c0dd45c9dc6)
 
 
@@ -52,6 +54,7 @@ This feature helps manage follow-up messages when quota or rate limits are reach
 * **Paused and Waiting**: Queued messages wait instead of being sent into more failed turns.
 * **Append While Limited**: Even while autosend is paused, you can still press `Tab` to add messages to the queue.
 * **Resume on Availability**: Once a later rate-limit snapshot shows quota is available again, Codext sends the **first** queued message.
+* **Keep Active Steering**: If a turn is still running, Enter can steer it even while idle queue autosend is paused. Idle submissions remain queued.
 
 ### Account Switching
 
@@ -59,7 +62,7 @@ This feature helps manage follow-up messages when quota or rate limits are reach
 
 Codex now reloads authentication after external `auth.json` writes settle, so account changes can be picked up without restarting at safe boundaries.
 
-* **TUI**: Tracks `auth.json` changes without watching the whole `CODEX_HOME` directory: when the file exists, Codext watches the file directly; when it is absent, Codext lightly polls for it to appear again. Auth is deferred until any active task completes; transient read errors do not clear cached auth.
+* **TUI**: Polls only the `auth.json` file state, not the whole `CODEX_HOME` directory, and trailing-debounces changes before reloading. Auth is deferred until any active task completes; transient read errors do not clear cached auth.
 * **App-server**: Reloads auth before `thread/start`, `thread/resume`, and `turn/start` when no turn is running, so the new account is picked up at the next safe request boundary.
 
 This enables auth refresh for TUI and Codex App flows when external tools update `auth.json`.

@@ -486,6 +486,13 @@ pub struct GetAccountParams {
     /// themselves and call `account/login/start` with `chatgptAuthTokens`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub refresh_token: bool,
+
+    /// When `true`, reloads the auth snapshot from storage before returning.
+    ///
+    /// This keeps long-lived clients in sync with `auth.json` updates without
+    /// requiring a full app-server restart.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reload_auth_from_storage: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -494,6 +501,8 @@ pub struct GetAccountParams {
 pub struct GetAccountResponse {
     pub account: Option<Account>,
     pub requires_openai_auth: bool,
+    /// Whether this request reloaded a different account identity from storage.
+    pub auth_changed: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

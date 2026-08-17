@@ -95,6 +95,10 @@ impl App {
                 return;
             }
             ServerNotification::AccountUpdated(notification) => {
+                if self.skip_next_account_updated_notification {
+                    self.skip_next_account_updated_notification = false;
+                    return;
+                }
                 let has_codex_backend_auth = matches!(
                     notification.auth_mode,
                     Some(

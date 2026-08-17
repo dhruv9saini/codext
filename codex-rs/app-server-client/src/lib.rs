@@ -1447,6 +1447,7 @@ mod tests {
                     result: serde_json::to_value(GetAccountResponse {
                         account: None,
                         requires_openai_auth: false,
+                        auth_changed: false,
                     })
                     .expect("response should serialize"),
                 }),
@@ -1466,6 +1467,7 @@ mod tests {
                 request_id: RequestId::Integer(1),
                 params: codex_app_server_protocol::GetAccountParams {
                     refresh_token: false,
+                    reload_auth_from_storage: false,
                 },
             })
             .await
@@ -1501,6 +1503,7 @@ mod tests {
                     result: serde_json::to_value(GetAccountResponse {
                         account: None,
                         requires_openai_auth: false,
+                        auth_changed: false,
                     })
                     .expect("response should serialize"),
                 }),
@@ -1525,6 +1528,7 @@ mod tests {
                 request_id: RequestId::Integer(1),
                 params: codex_app_server_protocol::GetAccountParams {
                     refresh_token: false,
+                    reload_auth_from_storage: false,
                 },
             })
             .await
@@ -1568,6 +1572,7 @@ mod tests {
                 request_id: RequestId::Integer(1),
                 params: codex_app_server_protocol::GetAccountParams {
                     refresh_token: false,
+                    reload_auth_from_storage: false,
                 },
             })
             .await
@@ -1577,6 +1582,7 @@ mod tests {
             GetAccountResponse {
                 account: None,
                 requires_openai_auth: false,
+                auth_changed: false,
             }
         );
 
@@ -1680,6 +1686,7 @@ mod tests {
                     result: serde_json::to_value(GetAccountResponse {
                         account: None,
                         requires_openai_auth: false,
+                        auth_changed: false,
                     })
                     .expect("response should serialize"),
                 }),
@@ -1700,6 +1707,7 @@ mod tests {
                     request_id: RequestId::Integer(1),
                     params: codex_app_server_protocol::GetAccountParams {
                         refresh_token: false,
+                        reload_auth_from_storage: false,
                     },
                 })
                 .await
@@ -1715,6 +1723,7 @@ mod tests {
                 request_id: RequestId::Integer(1),
                 params: codex_app_server_protocol::GetAccountParams {
                     refresh_token: false,
+                    reload_auth_from_storage: false,
                 },
             })
             .await
@@ -1733,6 +1742,7 @@ mod tests {
             GetAccountResponse {
                 account: None,
                 requires_openai_auth: false,
+                auth_changed: false,
             }
         );
 
