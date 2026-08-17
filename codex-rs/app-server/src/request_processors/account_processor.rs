@@ -1035,7 +1035,7 @@ impl AccountRequestProcessor {
         let mut auth_changed = false;
 
         if params.reload_auth_from_storage {
-            let _auth_transition_guard = self.auth_transition_lock.lock().await;
+            let _auth_transition_guard = Arc::clone(&self.auth_transition_lock).lock_owned().await;
             if *self
                 .thread_watch_manager
                 .subscribe_running_turn_count()

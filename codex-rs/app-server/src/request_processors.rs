@@ -522,6 +522,7 @@ use uuid::Uuid;
 #[cfg(test)]
 use codex_app_server_protocol::ServerRequest;
 
+#[allow(clippy::too_many_arguments)]
 async fn reload_auth_from_storage_if_idle(
     auth_manager: &Arc<AuthManager>,
     thread_manager: &Arc<ThreadManager>,
@@ -556,6 +557,7 @@ async fn reload_auth_from_storage_if_idle(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_auth_reload_status(
     status: AuthReloadStatus,
     auth_manager: &Arc<AuthManager>,

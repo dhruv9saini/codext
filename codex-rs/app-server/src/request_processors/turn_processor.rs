@@ -481,7 +481,7 @@ impl TurnRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<TurnStartResponse, JSONRPCErrorError> {
-        let _auth_transition_guard = self.auth_transition_lock.lock().await;
+        let _auth_transition_guard = Arc::clone(&self.auth_transition_lock).lock_owned().await;
         let (thread_id, thread) =
             self.load_thread(&params.thread_id)
                 .await

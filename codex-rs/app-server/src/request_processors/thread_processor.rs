@@ -991,7 +991,7 @@ impl ThreadRequestProcessor {
         client_mcp_extensions: ClientMcpExtensions,
         request_context: RequestContext,
     ) -> Result<(), JSONRPCErrorError> {
-        let _auth_transition_guard = self.auth_transition_lock.lock().await;
+        let _auth_transition_guard = Arc::clone(&self.auth_transition_lock).lock_owned().await;
         reload_auth_from_storage_if_idle(
             &self.auth_manager,
             &self.thread_manager,
@@ -3077,7 +3077,7 @@ impl ThreadRequestProcessor {
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> Result<(), JSONRPCErrorError> {
-        let _auth_transition_guard = self.auth_transition_lock.lock().await;
+        let _auth_transition_guard = Arc::clone(&self.auth_transition_lock).lock_owned().await;
         reload_auth_from_storage_if_idle(
             &self.auth_manager,
             &self.thread_manager,
