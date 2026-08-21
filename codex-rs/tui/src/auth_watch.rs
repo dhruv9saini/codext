@@ -59,7 +59,6 @@ fn watch_auth_file(auth_path: PathBuf, app_event_tx: AppEventSender, stop_rx: mp
             continue;
         }
 
-        // Wait for a quiet period so atomic replacements and partial writes settle first.
         loop {
             match stop_rx.recv_timeout(DEBOUNCE_DELAY) {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,

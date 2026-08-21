@@ -502,21 +502,54 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
 
 #[tokio::test]
 async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered_prompt() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.codex_op_target = CodexOpTarget::AppEvent;
     chat.thread_id = Some(ThreadId::new());
 
     chat.bottom_pane
         .set_composer_text("Hi, are you there?".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { .. } => {}
-        other => panic!("expected Op::UserTurn, got {other:?}"),
+    let mut saw_user_turn = false;
+    let mut inserted = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::CodexOp(Op::UserTurn { .. }) => saw_user_turn = true,
+            AppEvent::CodexOp(other) => panic!("expected Op::UserTurn, got {other:?}"),
+            AppEvent::InsertHistoryCell(cell) => inserted.push(cell.display_lines(/*width*/ 80)),
+            _ => {}
+        }
     }
-
-    let inserted = drain_insert_history(&mut rx);
+    assert!(saw_user_turn, "expected an app-event Op::UserTurn");
     assert_eq!(inserted.len(), 1);
     assert!(lines_to_single_string(&inserted[0]).contains("Hi, are you there?"));
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: AppServerTurnStatus::InProgress,
+                error: None,
+                started_at: Some(0),
+                completed_at: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let pending = chat
+        .pending_local_user_message_echo
+        .as_ref()
+        .expect("submitted prompt should remain pending until its app-server echo");
+    assert_eq!(pending.turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(pending.display.message, "Hi, are you there?");
+    assert!(pending.display.text_elements.is_empty());
+    assert!(pending.display.local_images.is_empty());
+    assert!(pending.display.remote_image_urls.is_empty());
 
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -535,7 +568,36 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
         /*replay_kind*/ None,
     );
 
-    assert!(drain_insert_history(&mut rx).is_empty());
+    let duplicate = drain_insert_history(&mut rx);
+    assert!(
+        duplicate.is_empty(),
+        "expected the local prompt echo to be suppressed, got {:?}",
+        duplicate
+            .iter()
+            .map(|lines| lines_to_single_string(lines))
+            .collect::<Vec<_>>()
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-2".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::UserMessage {
+                id: "user-2".to_string(),
+                client_id: None,
+                content: vec![AppServerUserInput::Text {
+                    text: "Hi, are you there?".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let inserted = drain_insert_history(&mut rx);
+    assert_eq!(inserted.len(), 1);
+    assert!(lines_to_single_string(&inserted[0]).contains("Hi, are you there?"));
 }
 
 #[tokio::test]

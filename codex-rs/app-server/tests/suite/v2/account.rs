@@ -21,6 +21,7 @@ use codex_app_server_protocol::CancelLoginAccountStatus;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshReason;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshResponse;
 use codex_app_server_protocol::ClientInfo;
+use codex_app_server_protocol::DesktopOnboardingEntrypoint;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::GetAuthStatusParams;
@@ -36,8 +37,13 @@ use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadStartParams;
+use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnCompletedNotification;
+use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
 use codex_login::AuthKeyringBackendKind;
@@ -49,6 +55,7 @@ use codex_login::login_with_api_key;
 use codex_login::login_with_bedrock_api_key;
 use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::auth::AuthMode as DomainAuthMode;
+use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -189,6 +196,7 @@ async fn read_account(mcp: &mut TestAppServer) -> Result<GetAccountResponse> {
     let request_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await?
@@ -208,6 +216,56 @@ async fn assert_account_updated(
         AccountUpdatedNotification {
             auth_mode,
             plan_type: None,
+        }
+    );
+    Ok(())
+}
+
+fn write_test_chatgpt_identity(
+    codex_home: &Path,
+    access_token: &str,
+    email: &str,
+    workspace_id: &str,
+) -> Result<()> {
+    write_chatgpt_auth(
+        codex_home,
+        ChatGptAuthFixture::new(access_token)
+            .email(email)
+            .plan_type("pro")
+            .account_id(workspace_id)
+            .chatgpt_account_id(workspace_id),
+        AuthCredentialsStoreMode::File,
+    )?;
+    Ok(())
+}
+
+async fn assert_test_identity(mcp: &mut TestAppServer, email: &str) -> Result<()> {
+    let account = read_account(mcp).await?;
+    assert_eq!(
+        account,
+        GetAccountResponse {
+            account: Some(Account::Chatgpt {
+                email: Some(email.to_string()),
+                plan_type: AccountPlanType::Pro,
+            }),
+            requires_openai_auth: true,
+            auth_changed: false,
+        }
+    );
+    Ok(())
+}
+
+async fn assert_chatgpt_auth_updated(mcp: &mut TestAppServer) -> Result<()> {
+    let payload: AccountUpdatedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("account/updated"),
+    )
+    .await??;
+    assert_eq!(
+        payload,
+        AccountUpdatedNotification {
+            auth_mode: Some(AuthMode::Chatgpt),
+            plan_type: Some(AccountPlanType::Pro),
         }
     );
     Ok(())
@@ -311,6 +369,7 @@ async fn logout_account_removes_auth_and_notifies() -> Result<()> {
     let get_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let account: GetAccountResponse =
@@ -351,6 +410,51 @@ async fn logout_account_succeeds_when_config_reload_fails() -> Result<()> {
     );
     assert_eq!(load_file_auth(codex_home.path())?, None);
     assert_account_updated(&mut mcp, /*auth_mode*/ None).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_enforces_local_auth_requirements_before_cloud_fetch() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mock_server = MockServer::start().await;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            chatgpt_base_url: Some(format!("{}/backend-api", mock_server.uri())),
+            ..Default::default()
+        },
+    )?;
+    std::fs::write(
+        codex_home.path().join("requirements.toml"),
+        "allowed_login_methods = [\"api\"]\n",
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-token")
+            .plan_type("enterprise")
+            .chatgpt_user_id("user-123")
+            .chatgpt_account_id("account-123")
+            .account_id("account-123"),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    assert!(
+        mock_server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .is_empty(),
+        "disallowed ChatGPT auth must not fetch cloud requirements"
+    );
+
+    assert_eq!(read_account(&mut mcp).await?.account, None);
 
     Ok(())
 }
@@ -409,6 +513,7 @@ async fn set_auth_token_updates_account_and_notifies() -> Result<()> {
     let get_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let account: GetAccountResponse =
@@ -421,6 +526,7 @@ async fn set_auth_token_updates_account_and_notifies() -> Result<()> {
                 plan_type: AccountPlanType::Pro,
             }),
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
 
@@ -431,6 +537,7 @@ async fn set_auth_token_updates_account_and_notifies() -> Result<()> {
     let get_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let account: GetAccountResponse =
@@ -485,6 +592,7 @@ async fn account_read_refresh_token_is_noop_in_external_mode() -> Result<()> {
     let get_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: true,
+            reload_auth_from_storage: false,
         })
         .await?;
     let account: GetAccountResponse =
@@ -497,6 +605,7 @@ async fn account_read_refresh_token_is_noop_in_external_mode() -> Result<()> {
                 plan_type: AccountPlanType::Pro,
             }),
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
 
@@ -1115,6 +1224,7 @@ async fn login_amazon_bedrock_replaces_primary_auth_and_persists_provider() -> R
             login_id: None,
             success: true,
             error: None,
+            onboarding_entrypoint: None,
         }
     );
     assert_account_updated(&mut mcp, Some(AuthMode::BedrockApiKey)).await?;
@@ -1281,6 +1391,7 @@ async fn logout_managed_bedrock_restores_default_account() -> Result<()> {
                 uses_codex_managed_credentials: true,
             }),
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
 
@@ -1302,6 +1413,7 @@ async fn logout_managed_bedrock_restores_default_account() -> Result<()> {
         GetAccountResponse {
             account: None,
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -1396,6 +1508,7 @@ async fn logout_managed_bedrock_preserves_changed_provider_without_experimental_
         GetAccountResponse {
             account: None,
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -1477,6 +1590,7 @@ async fn login_managed_bedrock_updates_active_bedrock_account() -> Result<()> {
                 uses_codex_managed_credentials: true,
             }),
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
 
@@ -2103,7 +2217,7 @@ async fn login_account_chatgpt_redirects_to_hosted_success_page() -> Result<()> 
         .await?;
     let login: LoginAccountResponse =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
-    let LoginAccountResponse::Chatgpt { auth_url, .. } = login else {
+    let LoginAccountResponse::Chatgpt { login_id, auth_url } = login else {
         bail!("unexpected login response: {login:?}");
     };
     let auth_url = Url::parse(&auth_url)?;
@@ -2119,15 +2233,49 @@ async fn login_account_chatgpt_redirects_to_hosted_success_page() -> Result<()> 
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
-    let response = client
-        .get(format!("{callback_url}?code=test-code&state={state}"))
-        .send()
-        .await?;
+    let token_redirect_uri = callback_url.clone();
+    let mut callback_url = Url::parse(&callback_url)?;
+    let callback_state = format!("{state}.onboarding_entrypoint=life_sciences");
+    callback_url
+        .query_pairs_mut()
+        .append_pair("code", "test-code")
+        .append_pair("state", &callback_state);
+    let response = client.get(callback_url).send().await?;
 
     assert_eq!(response.status(), 302);
     assert_eq!(
         response.headers()["location"].to_str()?,
         "http://localhost:3000/codex/open-app?source=login&app_brand=chatgpt"
+    );
+    let requests = mock_server
+        .received_requests()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("failed to read OAuth requests"))?;
+    let token_request = requests
+        .iter()
+        .find(|request| request.url.path() == "/oauth/token")
+        .ok_or_else(|| anyhow::anyhow!("missing OAuth token request"))?;
+    let token_form: std::collections::HashMap<_, _> =
+        url::form_urlencoded::parse(&token_request.body)
+            .into_owned()
+            .collect();
+    assert_eq!(token_form.get("redirect_uri"), Some(&token_redirect_uri),);
+    let notification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("account/login/completed"),
+    )
+    .await??;
+    let ServerNotification::AccountLoginCompleted(payload) = notification.try_into()? else {
+        bail!("unexpected notification")
+    };
+    assert_eq!(
+        payload,
+        AccountLoginCompletedNotification {
+            login_id: Some(login_id),
+            success: true,
+            error: None,
+            onboarding_entrypoint: Some(DesktopOnboardingEntrypoint::LifeSciences),
+        }
     );
     Ok(())
 }
@@ -2285,6 +2433,7 @@ async fn get_account_no_auth() -> Result<()> {
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2321,6 +2470,7 @@ async fn get_account_with_api_key() -> Result<()> {
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2330,6 +2480,7 @@ async fn get_account_with_api_key() -> Result<()> {
     let expected = GetAccountResponse {
         account: Some(Account::ApiKey {}),
         requires_openai_auth: true,
+        auth_changed: false,
     };
     assert_eq!(received, expected);
     Ok(())
@@ -2354,6 +2505,7 @@ async fn get_account_when_auth_not_required() -> Result<()> {
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2363,6 +2515,7 @@ async fn get_account_when_auth_not_required() -> Result<()> {
     let expected = GetAccountResponse {
         account: None,
         requires_openai_auth: false,
+        auth_changed: false,
     };
     assert_eq!(received, expected);
     Ok(())
@@ -2394,6 +2547,7 @@ region = "us-west-2"
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2405,6 +2559,7 @@ region = "us-west-2"
             uses_codex_managed_credentials: false,
         }),
         requires_openai_auth: false,
+        auth_changed: false,
     };
     assert_eq!(received, expected);
     Ok(())
@@ -2443,6 +2598,7 @@ command = "print-token"
                 uses_codex_managed_credentials: false,
             }),
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -2481,6 +2637,7 @@ region = "us-west-2"
                 uses_codex_managed_credentials: false,
             }),
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
 
@@ -2534,6 +2691,7 @@ async fn get_account_with_managed_bedrock_provider() -> Result<()> {
     let request_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let received: GetAccountResponse =
@@ -2546,6 +2704,7 @@ async fn get_account_with_managed_bedrock_provider() -> Result<()> {
                 uses_codex_managed_credentials: true,
             }),
             requires_openai_auth: false,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -2578,6 +2737,7 @@ async fn get_account_with_chatgpt() -> Result<()> {
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2590,8 +2750,369 @@ async fn get_account_with_chatgpt() -> Result<()> {
             plan_type: AccountPlanType::Pro,
         }),
         requires_openai_auth: true,
+        auth_changed: false,
     };
     assert_eq!(received, expected);
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_account_can_reload_a_changed_chatgpt_identity_from_storage() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            requires_openai_auth: Some(true),
+            ..Default::default()
+        },
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("access-first")
+            .email("first@example.com")
+            .plan_type("pro")
+            .account_id(WORKSPACE_ID_INITIAL)
+            .chatgpt_account_id(WORKSPACE_ID_INITIAL),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("access-second")
+            .email("second@example.com")
+            .plan_type("pro")
+            .account_id(WORKSPACE_ID_REFRESHED)
+            .chatgpt_account_id(WORKSPACE_ID_REFRESHED),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let request_id = mcp
+        .send_get_account_request(GetAccountParams {
+            refresh_token: false,
+            reload_auth_from_storage: true,
+        })
+        .await?;
+    let received: GetAccountResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+
+    assert_eq!(
+        received,
+        GetAccountResponse {
+            account: Some(Account::Chatgpt {
+                email: Some("second@example.com".to_string()),
+                plan_type: AccountPlanType::Pro,
+            }),
+            requires_openai_auth: true,
+            auth_changed: true,
+        }
+    );
+    let payload: AccountUpdatedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("account/updated"),
+    )
+    .await??;
+    assert_eq!(
+        payload,
+        AccountUpdatedNotification {
+            auth_mode: Some(AuthMode::Chatgpt),
+            plan_type: Some(AccountPlanType::Pro),
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_reloads_changed_auth_from_storage() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            requires_openai_auth: Some(true),
+            ..Default::default()
+        },
+    )?;
+    write_test_chatgpt_identity(
+        codex_home.path(),
+        "access-first",
+        "first@example.com",
+        WORKSPACE_ID_INITIAL,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    write_test_chatgpt_identity(
+        codex_home.path(),
+        "access-second",
+        "second@example.com",
+        WORKSPACE_ID_REFRESHED,
+    )?;
+    let request_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let _: ThreadStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+
+    assert_chatgpt_auth_updated(&mut mcp).await?;
+    assert_test_identity(&mut mcp, "second@example.com").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_reloads_changed_auth_from_storage() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            requires_openai_auth: Some(true),
+            ..Default::default()
+        },
+    )?;
+    write_test_chatgpt_identity(
+        codex_home.path(),
+        "access-first",
+        "first@example.com",
+        WORKSPACE_ID_INITIAL,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_id)).await??;
+
+    write_test_chatgpt_identity(
+        codex_home.path(),
+        "access-second",
+        "second@example.com",
+        WORKSPACE_ID_REFRESHED,
+    )?;
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id,
+            ..Default::default()
+        })
+        .await?;
+    let _: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+
+    assert_chatgpt_auth_updated(&mut mcp).await?;
+    assert_test_identity(&mut mcp, "second@example.com").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_reloads_changed_auth_from_storage() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            requires_openai_auth: Some(true),
+            ..Default::default()
+        },
+    )?;
+    write_test_chatgpt_identity(
+        codex_home.path(),
+        "access-first",
+        "first@example.com",
+        WORKSPACE_ID_INITIAL,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_id)).await??;
+
+    write_test_chatgpt_identity(
+        codex_home.path(),
+        "access-second",
+        "second@example.com",
+        WORKSPACE_ID_REFRESHED,
+    )?;
+    let turn_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![UserInput::Text {
+                text: "x".repeat(MAX_USER_INPUT_TEXT_CHARS + 1),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let _: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(turn_id)),
+    )
+    .await??;
+
+    assert_chatgpt_auth_updated(&mut mcp).await?;
+    assert_test_identity(&mut mcp, "second@example.com").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_reload_is_deferred_while_a_turn_is_running() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mock_server = MockServer::start().await;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            requires_openai_auth: Some(true),
+            base_url: Some(format!("{}/v1", mock_server.uri())),
+            chatgpt_base_url: Some(format!("{}/backend-api", mock_server.uri())),
+            ..Default::default()
+        },
+    )?;
+    write_models_cache(codex_home.path())?;
+    write_test_chatgpt_identity(
+        codex_home.path(),
+        "access-first",
+        "first@example.com",
+        WORKSPACE_ID_INITIAL,
+    )?;
+    let turn_response = responses::sse(vec![
+        responses::ev_response_created("resp-turn"),
+        responses::ev_assistant_message("msg-turn", "done"),
+        responses::ev_completed("resp-turn"),
+    ]);
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            responses::sse_response(turn_response).set_delay(Duration::from_secs(/*secs*/ 2)),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_id)).await??;
+    let turn_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![UserInput::Text {
+                text: "keep running".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let _: codex_app_server_protocol::TurnStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(turn_id)).await??;
+    let _: JSONRPCNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/started"),
+    )
+    .await??;
+
+    write_test_chatgpt_identity(
+        codex_home.path(),
+        "access-second",
+        "second@example.com",
+        WORKSPACE_ID_REFRESHED,
+    )?;
+    let concurrent_start_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let _: ThreadStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(concurrent_start_id)).await??;
+    assert_test_identity(&mut mcp, "first@example.com").await?;
+
+    let _: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    let after_turn_start_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let _: ThreadStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(after_turn_start_id)).await??;
+    assert_chatgpt_auth_updated(&mut mcp).await?;
+    assert_test_identity(&mut mcp, "second@example.com").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_account_with_business_prolite_returns_plan_type() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            requires_openai_auth: Some(true),
+            ..Default::default()
+        },
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("access-chatgpt")
+            .email("user@example.com")
+            .plan_type("self_serve_business_prolite"),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    let request_id = mcp
+        .send_get_account_request(GetAccountParams {
+            refresh_token: false,
+            reload_auth_from_storage: false,
+        })
+        .await?;
+    let received: GetAccountResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+
+    assert_eq!(
+        received,
+        GetAccountResponse {
+            account: Some(Account::Chatgpt {
+                email: Some("user@example.com".to_string()),
+                plan_type: AccountPlanType::SelfServeBusinessProLite,
+            }),
+            requires_openai_auth: true,
+            auth_changed: false,
+        }
+    );
     Ok(())
 }
 
@@ -2621,6 +3142,7 @@ async fn get_account_with_chatgpt_without_email() -> Result<()> {
     let request_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
     let received: GetAccountResponse =
@@ -2634,6 +3156,7 @@ async fn get_account_with_chatgpt_without_email() -> Result<()> {
                 plan_type: AccountPlanType::Pro,
             }),
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
     Ok(())
@@ -2701,6 +3224,7 @@ async fn get_account_omits_chatgpt_after_permanent_refresh_failure() -> Result<(
     let request_id = mcp
         .send_get_account_request(GetAccountParams {
             refresh_token: false,
+            reload_auth_from_storage: false,
         })
         .await?;
 
@@ -2712,6 +3236,7 @@ async fn get_account_omits_chatgpt_after_permanent_refresh_failure() -> Result<(
         GetAccountResponse {
             account: None,
             requires_openai_auth: true,
+            auth_changed: false,
         }
     );
     server.verify().await;
@@ -2743,6 +3268,7 @@ async fn get_account_with_chatgpt_missing_plan_claim_returns_unknown() -> Result
 
     let params = GetAccountParams {
         refresh_token: false,
+        reload_auth_from_storage: false,
     };
     let request_id = mcp.send_get_account_request(params).await?;
 
@@ -2755,6 +3281,7 @@ async fn get_account_with_chatgpt_missing_plan_claim_returns_unknown() -> Result
             plan_type: AccountPlanType::Unknown,
         }),
         requires_openai_auth: true,
+        auth_changed: false,
     };
     assert_eq!(received, expected);
     Ok(())

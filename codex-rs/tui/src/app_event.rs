@@ -30,7 +30,9 @@ use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadGoalStatus;
+use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_connectors::AppInfo;
 use codex_file_search::FileMatch;
 use codex_message_history::HistoryBatchCursor;
@@ -38,6 +40,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
+use uuid::Uuid;
 
 use crate::app_command::AppCommand;
 use crate::app_server_session::AppServerStartedThread;
@@ -146,13 +149,12 @@ pub(crate) struct PluginRemoteSectionError {
 ///
 /// A `StartupPrefetch` fires once, concurrently with the rest of TUI init, and
 /// updates the cached snapshots and any available reset-credit notice (no
-/// status card to finalize). A `BackgroundPoll` keeps the status header and
-/// queue gating fresh while the UI is idle. A `StatusCommand` is tied to a
-/// specific `/status` invocation and must call `finish_status_rate_limit_refresh`
-/// when done so the card stops showing a "refreshing" state. A `UsageMenu`
-/// refreshes a cached zero reset count so the disabled menu entry can become
-/// available without a restart. A `ResetPicker` refreshes the rate limits and
-/// detailed reset-credit rows before showing redemption choices.
+/// status card to finalize). A `StatusCommand` is tied to a specific `/status`
+/// invocation and must call `finish_status_rate_limit_refresh` when done so the
+/// card stops showing a "refreshing" state. A `UsageMenu` refreshes a cached
+/// zero reset count so the disabled menu entry can become available without a
+/// restart. A `ResetPicker` refreshes the rate limits and detailed reset-credit
+/// rows before showing redemption choices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RateLimitRefreshOrigin {
     /// Eagerly fetched after bootstrap for `/status` data and reset availability.
@@ -177,11 +179,24 @@ pub(crate) enum KeymapEditIntent {
     ReplaceOne { old_key: String },
 }
 
+/// Number of key strokes recorded by one `/keymap` capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeymapCaptureMode {
+    SingleKey,
+    Chord,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum AppEvent {
     /// Open the agent picker for switching active threads.
     OpenAgentPicker,
+    /// Merge a completed root-scoped agent-picker refresh without blocking terminal input.
+    AgentPickerThreadsLoaded {
+        primary_thread_id: ThreadId,
+        request_id: Uuid,
+        result: Result<Vec<Thread>, String>,
+    },
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 
@@ -210,6 +225,18 @@ pub(crate) enum AppEvent {
     ThreadHistoryEntryResponse {
         thread_id: ThreadId,
         event: HistoryLookupResponse,
+    },
+
+    /// Refill terminal scrollback from older paginated history after its rows reflow.
+    RequestOlderScrollbackHistory {
+        thread_id: ThreadId,
+    },
+
+    /// One background-loaded page of older Ctrl+T transcript history.
+    OlderThreadHistoryLoaded {
+        thread_id: ThreadId,
+        cursor: String,
+        result: Result<ThreadItemsListResponse, String>,
     },
 
     /// Persist a submitted prompt in the cross-session message history.
@@ -282,8 +309,10 @@ pub(crate) enum AppEvent {
     /// Permanently delete the current active main thread and exit after it succeeds.
     DeleteCurrentThread,
 
-    /// Fork the current session into a new thread.
-    ForkCurrentSession,
+    /// Fork the current session into a new thread, optionally assigning it a name.
+    ForkCurrentSession {
+        name: Option<String>,
+    },
 
     /// Branch before a selected prompt and reopen it in the new thread's composer.
     ForkSessionForPromptEdit {
@@ -366,12 +395,12 @@ pub(crate) enum AppEvent {
     /// `auth.json` changed on disk.
     AuthFileChanged,
 
-    /// Retry a failed auth reload attempt after debounce/backoff.
+    /// Retry a failed auth reload after backoff.
     AuthFileChangedRetry {
         attempt: u8,
     },
 
-    /// Retry a server-overloaded turn after its backoff delay.
+    /// Retry a server-overloaded turn after backoff.
     ServerOverloadedRetry {
         attempt: u8,
         generation: u64,
@@ -792,6 +821,9 @@ pub(crate) enum AppEvent {
         effort: Option<ReasoningEffort>,
     },
 
+    /// Show the cyber auto-review notice after the model selection confirmation.
+    CyberModelAutoReviewNotice,
+
     /// Persist the selected personality to the appropriate config.
     PersistPersonalitySelection {
         personality: Personality,
@@ -1128,6 +1160,7 @@ pub(crate) enum AppEvent {
         context: String,
         action: String,
         intent: KeymapEditIntent,
+        capture_mode: KeymapCaptureMode,
     },
 
     /// Open the keymap keypress inspector.

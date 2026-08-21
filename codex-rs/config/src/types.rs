@@ -785,8 +785,7 @@ pub struct Tui {
     #[serde(default)]
     pub usage_limit_resume_prompt: Option<String>,
 
-    /// Automatically submit `Continue` after a turn fails with `ServerOverloaded`.
-    /// Defaults to `true`.
+    /// Automatically submits `Continue` after a turn fails with `ServerOverloaded`.
     #[serde(default = "default_true")]
     pub server_overloaded_resume: bool,
 

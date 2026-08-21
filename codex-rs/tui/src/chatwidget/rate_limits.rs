@@ -299,8 +299,10 @@ impl ChatWidget {
 
             let has_exhausted_quota = Self::rate_limit_snapshot_has_exhausted_quota(&snapshot);
             let has_available_quota = Self::rate_limit_snapshot_has_available_quota(&snapshot);
-            let should_resume_paused_queue =
-                is_codex_limit && !has_exhausted_quota && has_available_quota;
+            let should_resume_paused_queue = is_codex_limit
+                && !workspace_limit_reached
+                && !has_exhausted_quota
+                && has_available_quota;
             let should_pause_queue = is_codex_limit && has_exhausted_quota;
 
             let mut display =
@@ -319,8 +321,10 @@ impl ChatWidget {
             }
             if should_pause_queue {
                 self.input_queue.suppress_queue_autosend = true;
+                // Enter must remain available to steer an active turn. Idle submissions still
+                // enter the queue because the ChatWidget submission gate remains suppressed.
                 self.bottom_pane
-                    .set_queue_submissions(/*queue_submissions*/ true);
+                    .set_queue_submissions(/*queue_submissions*/ false);
                 self.request_redraw();
             } else if should_resume_paused_queue {
                 let was_suppressing_queue_autosend = self.input_queue.suppress_queue_autosend;
@@ -332,8 +336,6 @@ impl ChatWidget {
                     self.clear_pending_usage_limit_resume_turn();
                 }
                 if was_suppressing_queue_autosend {
-                    // Synthetic recovery remains parked for an account change; quota recovery
-                    // resumes only user-queued follow-ups.
                     self.maybe_send_next_queued_input();
                 }
             }
@@ -538,14 +540,14 @@ impl ChatWidget {
         let items = vec![
             SelectionItem {
                 name: "Yes".to_string(),
-                display_shortcut: Some(key_hint::plain(KeyCode::Char('y'))),
+                display_shortcut: Some(key_hint::plain(KeyCode::Char('y')).into()),
                 actions: send_actions,
                 dismiss_on_select: true,
                 ..Default::default()
             },
             SelectionItem {
                 name: "No".to_string(),
-                display_shortcut: Some(key_hint::plain(KeyCode::Char('n'))),
+                display_shortcut: Some(key_hint::plain(KeyCode::Char('n')).into()),
                 is_default: true,
                 dismiss_on_select: true,
                 ..Default::default()

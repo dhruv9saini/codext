@@ -115,10 +115,7 @@ impl StatusHeader {
             directory: crate::status::format_directory_display(widget.status_line_cwd(), None),
             git: widget.status_header_git_status.clone(),
             rate_limit,
-            account: account_label(
-                widget.status_account_display(),
-                widget.current_plan_type(),
-            ),
+            account: account_label(widget.status_account_display(), widget.current_plan_type()),
         }
     }
 
@@ -142,8 +139,11 @@ impl StatusHeader {
             push(vec!["\u{ee9c} ".cyan(), Span::from(model.clone()).cyan()]);
         }
         if !self.directory.is_empty() {
-            let available = width.saturating_sub(UnicodeWidthStr::width("\u{f07c} ")).max(8);
-            let directory = crate::text_formatting::center_truncate_path(&self.directory, available);
+            let available = width
+                .saturating_sub(UnicodeWidthStr::width("\u{f07c} "))
+                .max(8);
+            let directory =
+                crate::text_formatting::center_truncate_path(&self.directory, available);
             push(vec!["\u{f07c} ".yellow(), Span::from(directory).yellow()]);
         }
         if let Some(git) = &self.git {
@@ -163,7 +163,10 @@ impl StatusHeader {
             push(segment);
         }
         if let Some(rate_limit) = &self.rate_limit {
-            push(vec!["\u{f464} ".cyan(), Span::from(rate_limit.clone()).cyan()]);
+            push(vec![
+                "\u{f464} ".cyan(),
+                Span::from(rate_limit.clone()).cyan(),
+            ]);
         }
         if let Some(account) = &self.account {
             push(vec![Span::from(account.clone()).cyan()]);
@@ -182,10 +185,7 @@ impl Renderable for StatusHeader {
     }
 }
 
-fn account_label(
-    account: Option<&StatusAccountDisplay>,
-    plan: Option<PlanType>,
-) -> Option<String> {
+fn account_label(account: Option<&StatusAccountDisplay>, plan: Option<PlanType>) -> Option<String> {
     match account {
         Some(StatusAccountDisplay::ChatGpt { email, plan: label }) => match (email, label) {
             (Some(email), Some(plan)) => Some(format!("{email}({plan})")),
@@ -205,4 +205,51 @@ fn compact_reset_time(resets_at: &str) -> &str {
     resets_at
         .split_once(' ')
         .map_or(resets_at, |(time, _)| time)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn header_line_contains_each_available_status_segment() {
+        let header = StatusHeader {
+            model: Some("gpt-5.6 high".to_string()),
+            directory: "codext".to_string(),
+            git: Some(crate::git_status::GitStatusSummary {
+                branch: "feature".to_string(),
+                changed: 2,
+                untracked: 1,
+                ahead: 3,
+                behind: 4,
+            }),
+            rate_limit: Some("75% 12:30".to_string()),
+            account: Some("user@example.com(Pro)".to_string()),
+        };
+
+        let rendered = header.line(160).to_string();
+        for expected in [
+            "gpt-5.6 high",
+            "codext",
+            "feature",
+            "↑3",
+            "↓4",
+            "+2",
+            "?1",
+            "75% 12:30",
+            "user@example.com(Pro)",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "expected {expected:?} in {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_reset_time_removes_the_date_suffix() {
+        assert_eq!(compact_reset_time("12:30 2026-08-17"), "12:30");
+        assert_eq!(compact_reset_time("soon"), "soon");
+    }
 }

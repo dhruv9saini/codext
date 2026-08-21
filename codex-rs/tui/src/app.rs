@@ -17,11 +17,11 @@ use crate::app_event::RateLimitRefreshOrigin;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
-use crate::app_server_session::account_state_from_get_account_response;
 use crate::app_server_session::AppServerBootstrap;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerStartedThread;
 use crate::app_server_session::TurnPermissionsOverride;
+use crate::app_server_session::account_state_from_get_account_response;
 use crate::app_server_session::app_server_rate_limit_snapshots;
 use crate::auth_watch::AuthWatch;
 use crate::bottom_pane::AppLinkViewParams;
@@ -51,6 +51,7 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::UpdateAvailableHistoryCell;
 use crate::hooks_rpc::HookTrustUpdate;
 use crate::key_hint::KeyBindingListExt;
+use crate::keymap::KeyChordMatcher;
 use crate::keymap::RuntimeKeymap;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
@@ -136,7 +137,6 @@ use codex_app_server_protocol::TurnError as AppServerTurnError;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::WriteStatus;
 use codex_config::CloudConfigBundleLoader;
-use codex_config::ConfigLayerStackOrdering;
 use codex_config::LoaderOverrides;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::MemoriesToml;
@@ -178,12 +178,14 @@ use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use ratatui::backend::Backend;
 use ratatui::layout::Rect;
+use ratatui::layout::Size;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
@@ -205,6 +207,7 @@ use toml::Value as TomlValue;
 use uuid::Uuid;
 mod agent_message_consolidation;
 mod agent_navigation;
+mod agent_picker;
 mod agent_status_feed;
 mod app_server_event_targets;
 mod app_server_events;
@@ -212,6 +215,7 @@ pub(crate) mod app_server_requests;
 mod background_requests;
 mod config_persistence;
 mod event_dispatch;
+mod history_pagination;
 mod history_ui;
 mod input;
 mod loaded_threads;
@@ -506,6 +510,7 @@ struct SessionSummary {
 struct InitialHistoryReplayBuffer {
     retained_lines: VecDeque<crate::terminal_hyperlinks::HyperlinkLine>,
     render_from_transcript_tail: bool,
+    was_truncated: bool,
 }
 
 const AUTH_RELOAD_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -561,7 +566,11 @@ impl AuthIdentity {
 }
 
 fn auth_change_message(previous: &AuthIdentity, next: &AuthIdentity) -> String {
-    format!("Account changed from {} to {}.", previous.display_label(), next.display_label())
+    format!(
+        "Account changed from {} to {}.",
+        previous.display_label(),
+        next.display_label()
+    )
 }
 
 pub(crate) struct App {
@@ -592,9 +601,11 @@ pub(crate) struct App {
     has_emitted_history_lines: bool,
     transcript_reflow: TranscriptReflowState,
     initial_history_replay_buffer: Option<InitialHistoryReplayBuffer>,
+    pub(crate) scrollback_has_older_history: bool,
 
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) keymap: RuntimeKeymap,
+    pub(crate) key_chord_matcher: KeyChordMatcher,
 
     /// Controls the animation thread that sends CommitTick events.
     pub(crate) commit_anim_running: Arc<AtomicBool>,
@@ -634,8 +645,10 @@ pub(crate) struct App {
     thread_event_channels: HashMap<ThreadId, ThreadEventChannel>,
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
     rate_limit_poll_task: Option<JoinHandle<()>>,
+    skip_next_account_updated_notification: bool,
     agent_navigation: AgentNavigationState,
     side_threads: HashMap<ThreadId, SideThreadState>,
+    abandoned_side_threads: HashSet<ThreadId>,
     active_thread_id: Option<ThreadId>,
     active_thread_rx: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     primary_thread_id: Option<ThreadId>,
@@ -822,6 +835,12 @@ impl App {
                     account_state_from_get_account_response(&account);
                 let next = AuthIdentity::from_parts(&display, plan_type, has_chatgpt_account);
                 let changed = account.auth_changed;
+                if changed {
+                    // The app-server emits AccountUpdated before it completes this account/get
+                    // request. Its compact payload has no email, so ignore that queued duplicate
+                    // after applying the richer response below.
+                    self.skip_next_account_updated_notification = true;
+                }
                 self.chat_widget.update_account_state(
                     display,
                     plan_type,
@@ -830,14 +849,16 @@ impl App {
                 );
                 if changed {
                     self.chat_widget.handle_auth_identity_changed();
-                    self.chat_widget.add_to_history(history_cell::new_warning_event(
-                        auth_change_message(&previous, &next),
-                    ));
+                    self.chat_widget
+                        .add_to_history(history_cell::new_warning_event(auth_change_message(
+                            &previous, &next,
+                        )));
                 }
                 self.chat_widget.on_auth_reload_completed(changed);
                 if has_chatgpt_account {
                     self.start_rate_limit_polling();
-                    let reset_hint_request_id = self.chat_widget.start_rate_limit_reset_startup_check();
+                    let reset_hint_request_id =
+                        self.chat_widget.start_rate_limit_reset_startup_check();
                     self.refresh_rate_limits(
                         app_server,
                         RateLimitRefreshOrigin::StartupPrefetch {
@@ -854,10 +875,12 @@ impl App {
             }
             Err(err) => {
                 tracing::warn!(%err, "failed to reload auth from storage");
-                self.chat_widget.on_auth_reload_completed(/*identity_changed*/ false);
-                self.chat_widget.add_to_history(history_cell::new_warning_event(
-                    "Failed to reload auth after auth.json changed.".to_string(),
-                ));
+                self.chat_widget
+                    .on_auth_reload_completed(/*identity_changed*/ false);
+                self.chat_widget
+                    .add_to_history(history_cell::new_warning_event(
+                        "Failed to reload auth after auth.json changed.".to_string(),
+                    ));
             }
         }
     }
@@ -921,7 +944,10 @@ impl App {
         let startup_started_at = Instant::now();
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
-        let auth_watch = Some(AuthWatch::start(config.codex_home.as_path(), app_event_tx.clone()));
+        let auth_watch = Some(AuthWatch::start(
+            config.codex_home.as_path(),
+            app_event_tx.clone(),
+        ));
         emit_project_config_warnings(&app_event_tx, &config);
         emit_system_bwrap_warning(&app_event_tx, &config);
         tui.set_notification_settings(
@@ -1178,12 +1204,14 @@ See the Codex keymap documentation for supported actions and examples."
             file_search,
             enhanced_keys_supported,
             keymap: runtime_keymap,
+            key_chord_matcher: KeyChordMatcher::default(),
             transcript_cells: Vec::new(),
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
             transcript_reflow: TranscriptReflowState::default(),
             initial_history_replay_buffer: None,
+            scrollback_has_older_history: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
             terminal_title_invalid_items_warned: terminal_title_invalid_items_warned.clone(),
@@ -1200,8 +1228,10 @@ See the Codex keymap documentation for supported actions and examples."
             thread_event_channels: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             rate_limit_poll_task: None,
+            skip_next_account_updated_notification: false,
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),
+            abandoned_side_threads: HashSet::new(),
             active_thread_id: None,
             active_thread_rx: None,
             primary_thread_id: None,
@@ -1217,6 +1247,7 @@ See the Codex keymap documentation for supported actions and examples."
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);
         }
+        app.update_visible_history_rows(tui.terminal.last_known_screen_size);
         let initial_session_started_at = Instant::now();
         if let Some(started) = initial_started_thread {
             let thread_id = started.session.thread_id;
@@ -1266,7 +1297,7 @@ See the Codex keymap documentation for supported actions and examples."
         let tui_events = tui.event_stream();
         tokio::pin!(tui_events);
 
-        tui.frame_requester().schedule_frame();
+        tui.schedule_screen_size_recheck(Duration::ZERO);
         tracing::info!(
             duration_ms = %(startup_elapsed_before_app + startup_started_at.elapsed()).as_millis(),
             bootstrap_ms = %bootstrap_ms,
@@ -1421,12 +1452,25 @@ See the Codex keymap documentation for supported actions and examples."
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
-        if matches!(event, TuiEvent::Draw | TuiEvent::Resize) {
-            self.handle_draw_pre_render(tui)?;
+        let screen_size = tui.screen_size_for_event(&event)?;
+        if !matches!(&event, TuiEvent::Key(_) | TuiEvent::Paste(_)) {
+            self.expire_pending_key_chord();
+            self.handle_draw_pre_render(tui, screen_size)?;
         }
 
+        let event = if let TuiEvent::Key(key_event) = event {
+            let Some(key_event) = self.route_key_chord_event(tui, key_event) else {
+                return Ok(AppRunControl::Continue);
+            };
+            TuiEvent::Key(key_event)
+        } else {
+            event
+        };
+
         if self.overlay.is_some() {
-            let _ = self.handle_backtrack_overlay_event(tui, event).await?;
+            let _ = self
+                .handle_backtrack_overlay_event(tui, app_server, event)
+                .await?;
         } else {
             match event {
                 TuiEvent::Key(key_event) => {
@@ -1440,9 +1484,9 @@ See the Codex keymap documentation for supported actions and examples."
                     let pasted = pasted.replace("\r", "\n");
                     self.chat_widget.handle_paste(pasted);
                 }
-                TuiEvent::Draw | TuiEvent::Resize => {
+                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) => {
                     if self.backtrack_render_pending {
-                        self.rebuild_transcript_after_backtrack(tui)?;
+                        self.rebuild_transcript_after_backtrack(tui, screen_size.into())?;
                         self.backtrack_render_pending = false;
                     }
                     self.chat_widget.maybe_post_pending_notification(tui);
@@ -1450,18 +1494,18 @@ See the Codex keymap documentation for supported actions and examples."
                         .chat_widget
                         .handle_paste_burst_tick(tui.frame_requester())
                     {
+                        tui.defer_screen_size(screen_size);
                         return Ok(AppRunControl::Continue);
                     }
                     // Allow widgets to process any pending timers before rendering.
                     self.chat_widget.pre_draw_tick();
-                    let rendered_area = self.render_chat_widget_frame(tui)?;
+                    let rendered_area = self.render_chat_widget_frame(tui, screen_size)?;
                     if self.chat_widget.ambient_pet_image_enabled() {
-                        let terminal_size = tui.terminal.size()?;
                         let ambient_pet_area = Rect::new(
                             /*x*/ 0,
                             /*y*/ 0,
-                            terminal_size.width,
-                            terminal_size.height,
+                            screen_size.width,
+                            screen_size.height,
                         );
                         if let Err(err) = tui.draw_ambient_pet_image(
                             self.chat_widget
@@ -1493,17 +1537,17 @@ See the Codex keymap documentation for supported actions and examples."
     pub(super) fn show_shutdown_feedback(&mut self, tui: &mut tui::Tui) -> Result<()> {
         self.disable_ambient_pet_before_shutdown(tui)?;
         self.chat_widget.show_shutdown_in_progress();
-        self.handle_draw_pre_render(tui)?;
+        let screen_size = tui.terminal.last_known_screen_size;
+        self.handle_draw_pre_render(tui, screen_size)?;
         self.chat_widget.pre_draw_tick();
-        self.render_chat_widget_frame(tui)?;
+        self.render_chat_widget_frame(tui, screen_size)?;
         Ok(())
     }
 
-    fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui) -> Result<Rect> {
-        let width = tui.terminal.size()?.width;
-        self.with_chat_widget_frame(width, |desired_height, chat_widget| {
+    fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui, screen_size: Size) -> Result<Rect> {
+        self.with_chat_widget_frame(screen_size.width, |desired_height, chat_widget| {
             let mut rendered_area = Rect::default();
-            tui.draw_with_resize_reflow(desired_height, |frame| {
+            tui.draw_with_resize_reflow(desired_height, screen_size, |frame| {
                 let area = frame.area();
                 rendered_area = area;
                 chat_widget.render(area, frame.buffer);

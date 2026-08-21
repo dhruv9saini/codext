@@ -51,7 +51,10 @@ pub(crate) async fn collect_git_status_summary(cwd: &Path) -> Option<GitStatusSu
 fn parse_porcelain_counts(output: &[u8]) -> (usize, usize) {
     let mut changed = 0;
     let mut untracked = 0;
-    for entry in output.split(|byte| *byte == 0).filter(|entry| !entry.is_empty()) {
+    for entry in output
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
         match entry[0] {
             b'?' => untracked += 1,
             b'1' | b'2' | b'u' => changed += 1,
@@ -84,11 +87,24 @@ async fn run_git_command(args: &[&str], cwd: &Path) -> Option<std::process::Outp
         .args(args)
         .current_dir(cwd)
         .kill_on_drop(true);
-    timeout(
-        GIT_STATUS_TIMEOUT,
-        command.output(),
-    )
-    .await
-    .ok()?
-    .ok()
+    timeout(GIT_STATUS_TIMEOUT, command.output())
+        .await
+        .ok()?
+        .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_porcelain_counts;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn porcelain_counts_track_changed_and_untracked_entries() {
+        let output = b"1 M. N... 100644 100644 100644 a b tracked\0\
+2 R. N... 100644 100644 100644 a b R100 renamed\0old\0\
+u UU N... 100644 100644 100644 100644 a b c conflict\0\
+? new-file\0! ignored\0";
+
+        assert_eq!(parse_porcelain_counts(output), (3, 1));
+    }
 }

@@ -3,6 +3,10 @@
 use super::*;
 
 impl ChatWidget {
+    pub(crate) fn keymap_contexts(&self) -> crate::keymap::KeymapContextSet {
+        self.bottom_pane.keymap_contexts()
+    }
+
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
         if self.bottom_pane.has_active_view()
             && !matches!(
@@ -247,6 +251,24 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn selected_index_for_present_view(&self, view_id: &'static str) -> Option<usize> {
+        self.bottom_pane.selected_index_for_present_view(view_id)
+    }
+
+    pub(crate) fn replace_selection_view_if_present(
+        &mut self,
+        view_id: &'static str,
+        params: SelectionViewParams,
+    ) -> bool {
+        let replaced = self
+            .bottom_pane
+            .replace_selection_view_if_present(view_id, params);
+        if replaced {
+            self.refresh_plan_mode_nudge();
+        }
+        replaced
+    }
+
     pub(crate) fn no_modal_or_popup_active(&self) -> bool {
         self.bottom_pane.no_modal_or_popup_active()
     }
@@ -375,10 +397,6 @@ impl ChatWidget {
     ///
     /// When the double-press quit shortcut is enabled, pressing the same shortcut again before
     /// expiry requests a shutdown-first quit.
-    ///
-    /// Copies the composer draft to the system clipboard when it contains text.
-    /// Returns `true` when the copy path handled the key; the caller then falls
-    /// back to the regular `Ctrl+C` behavior otherwise.
     fn on_ctrl_shift_c(&mut self) -> bool {
         if !self.bottom_pane.no_modal_or_popup_active() {
             return false;

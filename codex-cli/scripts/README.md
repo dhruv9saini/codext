@@ -14,9 +14,10 @@ example, to stage the CLI, responses proxy, and SDK packages for version `0.6.0`
 This downloads the required native package archive artifacts, hydrates `vendor/` for
 each package, and writes tarballs to `dist/npm/`.
 
-When `--package codex` is provided, the staging helper builds the lightweight
-`@openai/codex` meta package plus all platform-native `@openai/codex` variants
-that are later published under platform-specific dist-tags.
+When `--package codex` is provided in this fork, the staging helper builds the
+lightweight `@loongphy/codext` meta package plus its platform-native aliases.
+Every native package contains both the Codext executable and
+`codex-code-mode-host`, plus the platform support tools required by the launcher.
 
 Direct `build_npm_package.py` invocations are still useful for package-specific
 debugging, but native packages expect `--vendor-src` to point at a prehydrated

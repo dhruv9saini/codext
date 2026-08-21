@@ -39,7 +39,9 @@ impl ChatWidget {
     /// both the agent turn lifecycle and MCP startup lifecycle.
     pub(super) fn update_task_running_state(&mut self) {
         self.bottom_pane.set_task_running(
-            self.turn_lifecycle.agent_turn_running || self.mcp_startup_status.is_some(),
+            self.turn_lifecycle.agent_turn_running
+                || self.review.is_review_mode
+                || self.mcp_startup_status.is_some(),
         );
         self.refresh_plan_mode_nudge();
         self.refresh_status_surfaces();
@@ -366,9 +368,8 @@ impl ChatWidget {
                 self.server_overloaded_resume_generation =
                     self.server_overloaded_resume_generation.wrapping_add(1);
                 let generation = self.server_overloaded_resume_generation;
-                self.pending_server_overloaded_resume_turn = Some(UserMessage::from(
-                    DEFAULT_SERVER_OVERLOADED_RESUME_PROMPT,
-                ));
+                self.pending_server_overloaded_resume_turn =
+                    Some(UserMessage::from(DEFAULT_SERVER_OVERLOADED_RESUME_PROMPT));
                 let app_event_tx = self.app_event_tx.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(retry_delay).await;
@@ -428,6 +429,7 @@ impl ChatWidget {
         if !self.input_queue.user_turn_pending_start {
             return false;
         }
+        self.pending_local_user_message_echo = None;
         self.on_error(message);
         true
     }
@@ -447,7 +449,7 @@ impl ChatWidget {
         if usage_limit_error {
             self.input_queue.suppress_queue_autosend = true;
             self.bottom_pane
-                .set_queue_submissions(/*queue_submissions*/ true);
+                .set_queue_submissions(/*queue_submissions*/ false);
             if self.pending_usage_limit_resume_turn.is_none()
                 && let Some(prompt) = self.usage_limit_resume_prompt()
             {
